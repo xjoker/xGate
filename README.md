@@ -211,10 +211,21 @@ SERVER_PORT=9000 docker compose up -d
 
 启动后访问 `http://localhost:8024`，输入 `api_key` 登录，然后：
 
-1. 浏览器登录 [grok.com](https://grok.com)
-2. DevTools → Network → 任意 `grok.com` 请求 → 右键「Copy as cURL (bash)」
-3. xGate UI → 设置 → 「导入 cURL」→ 粘贴 → 服务端立即冒烟验证
-4. 验证通过后即可使用所有功能；`session_keeper` 每 ~10 分钟自动刷新 `cf_clearance`
+**第一步：从 Chrome 导出 cURL**
+
+1. 用 Chrome 打开并登录 [grok.com](https://grok.com)
+2. 按 `F12` 打开 DevTools，切到 **Network** 标签
+3. 在地址栏过滤框输入 `rest/skills`，找到 `https://grok.com/rest/skills` 请求（也可用任意 `grok.com` 请求，推荐 `rest/skills` 因为它包含最完整的 cookie）
+4. 右键该请求 → **Copy** → **Copy as cURL (bash)**
+
+> 找不到 `rest/skills`？刷新页面或在 grok.com 发一条消息，请求就会出现。
+
+**第二步：导入 xGate**
+
+5. xGate Web UI → **设置** → **导入 cURL** → 粘贴 → 点击导入
+6. 后端自动冒烟验证（请求 `rest/skills`），成功后即可使用所有功能
+
+`session_keeper` 每 ~10 分钟自动刷新 `cf_clearance` 和 `__cf_bm`，cookie 过期前无需手动重新导入。若 Grok 登录态失效（`sso`/`sso-rw` 过期），重复上述步骤重新导入即可。
 
 > **⚠️ 使用代理时的关键要求**
 >
