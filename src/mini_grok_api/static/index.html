@@ -1925,10 +1925,13 @@ Browser: ${esc(d.browser || '未配置')}<br>
 Proxy: ${d.proxy_configured ? '已配置' : '未配置'}<br>
 FlareSolverr: ${esc(d.flaresolverr_url || '未配置')}<br>
 日志保留: ${d.log_retention_days ?? 90} 天`;
-    const retEl = document.getElementById('cfg-retention');
-    if (retEl && d.log_retention_days) retEl.placeholder = String(d.log_retention_days);
-    const fsEl = document.getElementById('cfg-flaresolverr');
-    if (fsEl && d.flaresolverr_url) fsEl.placeholder = d.flaresolverr_url;
+    // 预填非敏感字段（cookie / api_key 保持空白）
+    const set = (id, val) => { const el = document.getElementById(id); if (el && val) el.value = val; };
+    set('cfg-ua',            d.user_agent);
+    set('cfg-browser',       d.browser);
+    set('cfg-proxy',         d.proxy);
+    set('cfg-flaresolverr',  d.flaresolverr_url);
+    set('cfg-retention',     d.log_retention_days != null ? String(d.log_retention_days) : '');
   } catch {}
 };
 

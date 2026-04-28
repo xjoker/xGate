@@ -1182,6 +1182,8 @@ async def admin_status(settings: Annotated[Settings, Depends(_settings)]) -> dic
         "cookie_configured": bool(settings.grok_cookie),
         "cookie_masked": mask_secret(settings.grok_cookie),
         "browser": settings.grok_browser,
+        "user_agent": settings.grok_user_agent or "",
+        "proxy": settings.grok_proxy or "",
         "proxy_configured": bool(settings.grok_proxy),
         "flaresolverr_url": settings.flaresolverr_url or "",
         "log_retention_days": settings.log_retention_days,
