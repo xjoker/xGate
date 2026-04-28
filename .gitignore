@@ -21,10 +21,11 @@ dist/
 *.pem
 
 # Runtime data (cookies, generated images/videos, SQLite logs)
-data/config/mini.toml
+data/config/*.toml
 data/images/
 data/file/
 data/_videos/
+data/grok-files/
 
 # IDE / OS
 .DS_Store
