@@ -141,17 +141,34 @@ flaresolverr_url = "http://192.168.1.100:8191"   # 外部 FlareSolverr 实际地
 
 ### 端口与挂载说明
 
-| 项目 | 默认值 | 环境变量覆盖 |
-|------|--------|-------------|
-| xGate 监听端口（宿主机） | `8024` | `SERVER_PORT=8024` |
-| FlareSolverr 端口（仅 `--profile full`） | `8191` | `FLARESOLVERR_PORT=8191` |
-| 数据目录（配置/图片/视频/日志） | `./data` | — |
+**端口**
 
-端口示例（`.env` 或 `export`）：
+| 服务 | 容器内端口 | 宿主机默认 | 环境变量覆盖 |
+|------|-----------|-----------|-------------|
+| xGate | `8024` | `8024` | `SERVER_PORT` |
+| FlareSolverr（`--profile full` 时） | `8191` | `8191` | `FLARESOLVERR_PORT` |
+
+端口覆盖示例：
 
 ```bash
 SERVER_PORT=9000 docker compose up -d
+# 或写入 .env 文件：
+# SERVER_PORT=9000
+# FLARESOLVERR_PORT=8191
 ```
+
+**持久化目录**
+
+所有数据统一挂载为 `./data:/app/data`，子目录说明：
+
+| 路径 | 内容 | 重要性 |
+|------|------|--------|
+| `data/config/mini.toml` | 配置文件（含 api_key、cookie、代理） | ⭐ 必须持久化 |
+| `data/images/` | 生成的图片，按 session 子目录组织；视频也存入对应 session 目录 | 按需 |
+| `data/file/xgate.db` | SQLite 请求日志（聊天 / 图片 / 视频） | 按需 |
+| `data/grok-files/` | 从 Grok 云端手动下载的文件 | 按需 |
+
+> 容器启动时若 `data/config/mini.toml` 不存在，服务会以默认值运行（`api_key=change-me`，无 cookie），**请务必在首次启动前复制并编辑 `mini.toml.example`**。
 
 ---
 

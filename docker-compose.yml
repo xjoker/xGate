@@ -7,6 +7,11 @@ services:
     #   dockerfile: Dockerfile
     container_name: xgate
     volumes:
+      # 持久化目录（全部挂载到 /app/data）：
+      #   data/config/mini.toml   — 配置文件（含 api_key、cookie、代理）⭐ 必须
+      #   data/images/            — 生成图片 + 视频（按 session 子目录）
+      #   data/file/xgate.db      — SQLite 请求日志
+      #   data/grok-files/        — Grok 云端手动下载文件
       - ./data:/app/data
     ports:
       - "${SERVER_PORT:-8024}:8024"
