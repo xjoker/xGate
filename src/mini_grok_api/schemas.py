@@ -40,6 +40,7 @@ class ImageStreamStartRequest(BaseModel):
     size: str = "1024x1024"
     interval_seconds: float = Field(default=5.0, ge=1.0, le=3600.0)
     max_rounds: int = Field(default=-1, ge=-1)
+    max_images: int = Field(default=0, ge=0)  # 0=不限；>0 时按图片数严格停止
     image_data: str | None = None
 
 
@@ -47,6 +48,7 @@ class TaskQueueAddRequest(BaseModel):
     prompt: str
     target_count: int = Field(default=10, ge=1, le=1000)
     size: str = "1024x1024"
+    origin: str = Field(default="queue")  # queue / chat / api，仅用于前端区分展示
     model: str = "grok-imagine"
     interval_seconds: float = Field(default=5.0, ge=1.0, le=3600.0)
 

@@ -33,6 +33,8 @@ class Settings:
     log_retention_days: int
     flaresolverr_url: str
     flaresolverr_proxy_url: str
+    files_auto_sync: bool
+    files_auto_sync_interval_seconds: int
 
 
 def _read_toml(path: Path) -> dict:
@@ -84,6 +86,8 @@ def load_settings() -> Settings:
         log_retention_days=_int(data, "log.retention_days", 90),
         flaresolverr_url=_str(data, "grok.flaresolverr_url", ""),
         flaresolverr_proxy_url=_str(data, "grok.flaresolverr_proxy_url", ""),
+        files_auto_sync=bool(_get_nested(data, "files.auto_sync", False)),
+        files_auto_sync_interval_seconds=_int(data, "files.auto_sync_interval_seconds", 300),
     )
 
 
@@ -109,6 +113,10 @@ def save_settings(settings: Settings, path: Path = CONFIG_PATH) -> None:
             "",
             "[log]",
             f"retention_days = {settings.log_retention_days}",
+            "",
+            "[files]",
+            f"auto_sync = {str(settings.files_auto_sync).lower()}",
+            f"auto_sync_interval_seconds = {settings.files_auto_sync_interval_seconds}",
             "",
         ]
     )

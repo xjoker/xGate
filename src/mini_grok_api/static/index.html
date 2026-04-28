@@ -4,9 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>xGate</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-sans/style.css" rel="stylesheet">
-<link href="https://cdn.jsdelivr.net/npm/geist@1.0.0/dist/fonts/geist-mono/style.css" rel="stylesheet">
+<!-- 字体已本地化：使用系统字体栈，避免外部 CDN 依赖 -->
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/photoswipe@5/dist/photoswipe.css">
 
 <style>
@@ -25,8 +23,8 @@
   --radius-xl: 28px;
   --shadow: 0 1px 3px rgba(0,0,0,.06), 0 4px 12px rgba(0,0,0,.04);
   --shadow-lg: 0 10px 30px rgba(0,0,0,.07), inset 0 1px 0 rgba(255,255,255,.5);
-  --font: 'Geist Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  --font-mono: 'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, 'Cascadia Mono', 'Roboto Mono', 'JetBrains Mono', monospace;
   --nav-h: 52px;
   --composer-h: 160px;
 }
@@ -87,7 +85,8 @@ nav {
 /* ── Masonry feed ── */
 .feed-wrap {
   min-height: calc(100vh - var(--nav-h) - var(--composer-h) - 8px);
-  padding: 20px 20px 12px;
+  /* padding-bottom 至少 = composer 高度 + 间距，否则末尾内容会被 sticky composer 遮住 */
+  padding: 20px 20px calc(var(--composer-h) + 24px);
 }
 
 .feed-empty {
@@ -124,6 +123,35 @@ nav {
   gap: 10px;
   align-items: start;
 }
+.gallery-tile-del {
+  position: absolute; top: 6px; right: 6px; z-index: 4;
+  width: 26px; height: 26px; border-radius: 50%;
+  background: rgba(0,0,0,.55); color: #fff; border: none; cursor: pointer;
+  font-size: 13px; display: flex; align-items: center; justify-content: center;
+  opacity: .85; transition: opacity .15s, background .15s, transform .15s;
+}
+.masonry-tile { position: relative; }
+.masonry-tile:hover .gallery-tile-del { opacity: 1; transform: scale(1.05); }
+.gallery-tile-del:hover { background: #b91c1c; }
+.masonry-tile.deleted { opacity: 0; transform: scale(.92); transition: opacity .25s, transform .25s; pointer-events: none; }
+/* 批量选择模式 */
+#gallery-grid.select-mode .masonry-tile { cursor: pointer; }
+#gallery-grid.select-mode .gallery-tile-del { display: none; }
+.masonry-tile.tile-selected::after {
+  content: ''; position: absolute; inset: 0; z-index: 3;
+  box-shadow: inset 0 0 0 3px #047857; border-radius: inherit;
+  background: rgba(5, 150, 105, .12); pointer-events: none;
+}
+.masonry-tile .tile-check {
+  position: absolute; top: 6px; left: 6px; z-index: 4;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: rgba(255,255,255,.85); border: 1.5px solid rgba(0,0,0,.2);
+  display: none; align-items: center; justify-content: center;
+  font-size: 12px; color: #fff; pointer-events: none;
+}
+#gallery-grid.select-mode .tile-check { display: flex; }
+.masonry-tile.tile-selected .tile-check { background: #047857; border-color: #047857; }
+.masonry-tile.tile-selected .tile-check::after { content: '✓'; }
 .masonry-tile {
   border-radius: var(--radius-lg); overflow: hidden;
   display: block; cursor: zoom-in;
@@ -182,8 +210,10 @@ nav {
 }
 .composer-textarea {
   width: 100%; resize: none; font-size: 14px; line-height: 1.55;
-  color: var(--fg); background: none; min-height: 42px; max-height: 120px;
+  color: var(--fg); background: none;
+  min-height: 42px; max-height: 240px;
   overflow-y: auto;
+  transition: height .08s ease-out;
 }
 .composer-textarea::placeholder { color: var(--fg-subtle); }
 .composer-toolbar {
@@ -326,6 +356,11 @@ nav {
 /* Task list */
 .task-stats { font-size: 12px; color: var(--fg-muted); font-family: var(--font-mono); margin-bottom: 12px; }
 
+.tasks-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  gap: 12px;
+}
 .task-card {
   background: var(--bg-card); border: 1px solid var(--border);
   border-radius: var(--radius-lg); padding: 14px 16px; margin-bottom: 10px;
@@ -471,7 +506,11 @@ nav {
   border-radius: 10px; padding: 10px 16px; font-size: 13px; font-weight: 500;
   box-shadow: var(--shadow-lg); pointer-events: auto;
   animation: toastIn .25s cubic-bezier(.16,1,.3,1) forwards;
-  display: flex; align-items: center; gap: 8px; max-width: 360px;
+  display: flex; align-items: flex-start; gap: 8px;
+  max-width: min(560px, calc(100vw - 40px));
+  /* 长英文文本必须强制换行，否则 max-width 不生效 */
+  overflow-wrap: anywhere; word-break: break-word; white-space: pre-line;
+  line-height: 1.4;
 }
 .toast.success { border-color: #a7f3d0; color: #059669; }
 .toast.error   { border-color: #fca5a5; color: #dc2626; }
@@ -489,6 +528,7 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
   min-height: 100vh;
   background: var(--bg);
 }
+/* ── Files gallery ── */
 .files-toolbar {
   position: sticky; top: var(--nav-h); z-index: 80;
   background: rgba(250,249,245,.92); backdrop-filter: blur(8px);
@@ -499,62 +539,319 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
 .files-count {
   font-size: 12px; color: var(--fg-muted); font-weight: 500; margin-right: 4px;
 }
-.files-grid {
-  /* CSS columns 实现瀑布流（卡片高度自适应不留空白） */
-  column-width: 180px;
-  column-gap: 10px;
-  padding: 16px 20px;
+/* ── Modal (sync details / generic dialog) ── */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 9100;
+  background: rgba(0,0,0,.5);
+  display: none; align-items: center; justify-content: center;
+  backdrop-filter: blur(4px);
 }
-@media (min-width: 1400px) { .files-grid { column-width: 200px; } }
-@media (min-width: 1800px) { .files-grid { column-width: 220px; } }
+.modal-backdrop.open { display: flex; }
+.modal-card {
+  background: var(--bg-card); border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.3);
+  padding: 0; min-width: 420px; max-width: 560px; max-height: 80vh;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--border);
+}
+.modal-header {
+  padding: 16px 20px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.modal-title { font-size: 15px; font-weight: 600; color: var(--fg); }
+.modal-close {
+  width: 28px; height: 28px; border-radius: 50%; border: none;
+  background: transparent; cursor: pointer; font-size: 18px;
+  color: var(--fg-muted); display: flex; align-items: center; justify-content: center;
+}
+.modal-close:hover { background: var(--bg-card-hover, rgba(0,0,0,.06)); color: var(--fg); }
+.modal-body { padding: 16px 20px; overflow-y: auto; }
+.modal-row {
+  display: flex; justify-content: space-between; gap: 16px;
+  padding: 6px 0; font-size: 13px;
+  border-bottom: 1px dashed rgba(0,0,0,.06);
+}
+.modal-row:last-child { border-bottom: none; }
+.modal-row .k { color: var(--fg-muted); }
+.modal-row .v { color: var(--fg); font-weight: 500; font-variant-numeric: tabular-nums; }
+.modal-row .v.running { color: #1d4ed8; }
+.modal-row .v.error   { color: #b91c1c; }
+.modal-row .v.success { color: #047857; }
+.modal-section-title {
+  font-size: 11px; font-weight: 700; color: var(--fg-muted);
+  text-transform: uppercase; letter-spacing: .06em;
+  margin: 14px 0 4px; padding-top: 8px; border-top: 1px solid var(--border);
+}
+.modal-section-title:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+
+.files-sync-status {
+  font-size: 11px; padding: 3px 8px; border-radius: 10px;
+  background: rgba(5,150,105,.12); color: #047857; font-weight: 500;
+  cursor: pointer; user-select: none; display: inline-flex; align-items: center; gap: 5px;
+  white-space: nowrap;
+}
+.files-sync-status.running { background: rgba(59,130,246,.15); color: #1d4ed8; }
+.files-sync-status.error   { background: rgba(220,38,38,.15);  color: #b91c1c; }
+.files-sync-status .dot {
+  width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+}
+.files-sync-status.running .dot { animation: pulse-dot 1.2s ease-in-out infinite; }
+@keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+.files-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 3px;
+  padding: 3px;
+}
+/* Card: square image tile, no border, no shadow */
 .file-card {
-  display: inline-block;
-  width: 100%;
-  margin-bottom: 10px;
-  break-inside: avoid;
-  position: relative; border-radius: var(--radius-lg);
-  background: var(--bg-card); border: 1px solid var(--border);
-  overflow: hidden; cursor: pointer; transition: transform .15s, box-shadow .15s;
+  position: relative;
+  aspect-ratio: 1 / 1;
+  background: #e8e3db;
+  overflow: hidden; cursor: pointer;
   user-select: none;
 }
-.file-card:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,.09); }
-.file-card.selected { border-color: #111; box-shadow: 0 0 0 2px rgba(0,0,0,.15); }
-.file-thumb {
-  width: 100%; background: linear-gradient(135deg, #f0ece4, #e8e2d6);
-  overflow: hidden; position: relative;
-  display: flex; align-items: center; justify-content: center;
+/* Hover: dim slightly */
+.file-card::after {
+  content: ''; position: absolute; inset: 0; z-index: 1;
+  background: rgba(0,0,0,0); transition: background .15s;
+  pointer-events: none;
 }
-.file-thumb.no-aspect { aspect-ratio: 1 / 1; }
-.file-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.file-thumb-icon { font-size: 36px; opacity: .45; }
+.file-card:hover::after { background: rgba(0,0,0,.12); }
+/* Thumbnail image */
+.file-thumb-img {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+  opacity: 0; transition: opacity .25s;
+}
+.file-card.loaded .file-thumb-img { opacity: 1; }
+/* Placeholder icon (shown until thumb loads) */
+.file-thumb-icon {
+  position: absolute; inset: 0; z-index: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 32px; opacity: .25;
+}
+.file-card.loaded .file-thumb-icon { display: none; }
+/* Checkmark — hidden, appears on hover + always visible when selected */
 .file-check {
-  position: absolute; top: 7px; left: 7px; z-index: 2;
-  width: 20px; height: 20px; border-radius: 50%;
-  background: rgba(250,249,245,.88); border: 1.5px solid rgba(0,0,0,.15);
+  position: absolute; top: 6px; left: 6px; z-index: 3;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: rgba(250,249,245,.85); border: 1.5px solid rgba(0,0,0,.2);
   display: flex; align-items: center; justify-content: center;
-  transition: background .12s, border-color .12s;
+  opacity: 0; transition: opacity .12s, background .12s, border-color .12s;
+  backdrop-filter: blur(2px);
 }
-.file-card.selected .file-check { background: var(--fg); border-color: var(--fg); }
-.file-check-tick {
-  width: 10px; height: 10px; display: none;
-}
+.file-card:hover .file-check,
+.file-card.selected .file-check { opacity: 1; }
+.file-card.selected .file-check { background: #111; border-color: #111; }
+.file-check-tick { width: 11px; height: 11px; display: none; }
 .file-check-tick path { stroke: #fff; }
 .file-card.selected .file-check-tick { display: block; }
+/* Selected: blue ring */
+.file-card.selected::before {
+  content: ''; position: absolute; inset: 0; z-index: 2;
+  box-shadow: inset 0 0 0 2.5px #111;
+  pointer-events: none;
+}
+/* Video badge */
 .file-type-badge {
-  position: absolute; top: 7px; right: 7px; z-index: 2;
-  background: rgba(0,0,0,.5); color: #fff;
-  font-size: 9px; font-weight: 700; padding: 2px 5px; border-radius: 4px;
+  position: absolute; bottom: 6px; right: 6px; z-index: 3;
+  background: rgba(0,0,0,.55); color: #fff;
+  font-size: 9px; font-weight: 700; padding: 2px 5px; border-radius: 3px;
   text-transform: uppercase; letter-spacing: .04em;
 }
-.file-meta {
-  padding: 8px 10px; border-top: 1px solid var(--border);
+/* Already downloaded — disable interaction, hide checkmark, show "已下载" badge */
+.file-card.downloaded { cursor: pointer; }
+.file-card.downloaded:hover::after { background: rgba(0,0,0,.08); }
+/* 已下载也显示勾选框（hover 或选中时可见），允许多选用于批量删除 */
+.file-card.downloaded .file-check { display: flex; }
+.file-card.downloaded::before {
+  content: '已下载';
+  position: absolute; top: 6px; right: 6px; z-index: 3;
+  background: rgba(5,150,105,.85); color: #fff;
+  font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 3px;
+  letter-spacing: .04em;
+  box-shadow: none;
 }
-.file-name {
-  font-size: 11px; font-weight: 600; color: var(--fg);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  margin-bottom: 2px;
+/* 单卡片删除按钮（hover 显示，右下角） */
+.file-quick-del {
+  position: absolute; bottom: 6px; right: 6px; z-index: 3;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: rgba(250,249,245,.88); border: 1.5px solid rgba(220,38,38,.4);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: #b91c1c; cursor: pointer;
+  opacity: 0; transition: opacity .12s, background .12s;
+  backdrop-filter: blur(2px);
 }
-.file-info { font-size: 10px; color: var(--fg-muted); }
+.file-card:hover .file-quick-del { opacity: 1; }
+.file-quick-del:hover { background: #b91c1c; color: #fff; }
+/* 视频角标位置避让删除按钮 */
+.file-card .file-type-badge { right: 32px; }
+.file-card.unavailable .file-quick-del { display: none; }
+/* 不可用 asset（CDN 空 body / 404）：灰色蒙层 + 警告角标，不可点 */
+.file-card.unavailable { cursor: default; opacity: .55; }
+.file-card.unavailable:hover::after { background: rgba(0,0,0,.04); }
+.file-card.unavailable .file-check,
+.file-card.unavailable .file-quick-dl { display: none; }
+.file-card.unavailable::before {
+  content: '⚠ 不可用';
+  position: absolute; top: 6px; right: 6px; z-index: 3;
+  background: rgba(120,113,108,.85); color: #fff;
+  font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 3px;
+  letter-spacing: .04em;
+}
+.file-card.unavailable .file-thumb-icon { font-size: 28px; opacity: .35; }
+/* 云端已删除：保留显示，加灰色"云端删除"角标；本地文件仍可预览/下载 */
+.file-card.cloud-deleted-mark::before {
+  content: '☁ 云端删除';
+  position: absolute; top: 6px; right: 6px; z-index: 3;
+  background: rgba(120,113,108,.85); color: #fff;
+  font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 3px;
+  letter-spacing: .04em;
+}
+.file-card.cloud-deleted-mark.downloaded::before {
+  content: '☁ 云端已删（本地保留）';
+  background: rgba(120,113,108,.85);
+}
+.file-card.cloud-deleted-mark .file-quick-del { display: none; }
+/* quick-dl button shows on all cards (browser download) */
+/* Cards being deleted (API in-flight) — dim + spinner overlay */
+.file-card.deleting { opacity: .55; pointer-events: none; }
+.file-card.deleting .file-dl-overlay { opacity: 1; background: rgba(220,38,38,.45); }
+.file-card.deleting .file-dl-prog { animation: ring-spin .9s linear infinite; stroke: #fff; }
+/* 已入队等待删除（后端队列等待中） */
+.file-card.queued-del { opacity: .65; pointer-events: none; }
+.file-card.queued-del .file-dl-overlay { opacity: 1; background: rgba(120,113,108,.55); }
+.file-card.queued-del .file-dl-prog { animation: none; stroke-dasharray: 100.5 0; transform: rotate(-90deg); stroke: rgba(255,255,255,.4); }
+.file-card.queued-del::after { content: '🗑 等待删除'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 11px; font-weight: 600; z-index: 6; pointer-events: none; }
+/* Per-card quick download button (hover only) */
+.file-quick-dl {
+  position: absolute; bottom: 6px; left: 6px; z-index: 3;
+  width: 22px; height: 22px; border-radius: 50%;
+  background: rgba(250,249,245,.88); border: 1.5px solid rgba(0,0,0,.18);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; color: #111; cursor: pointer;
+  opacity: 0; transition: opacity .12s, background .12s;
+  backdrop-filter: blur(2px);
+}
+.file-card:hover .file-quick-dl { opacity: 1; }
+.file-quick-dl:hover { background: #111; color: #fff; }
+/* Queued state — clock icon (no spin) */
+.file-card.queued .file-dl-overlay { opacity: 1; background: rgba(0,0,0,.45); }
+.file-card.queued .file-dl-prog { animation: none; stroke-dasharray: 100.5 0; transform: rotate(-90deg); stroke: rgba(255,255,255,.35); }
+.file-card.queued .file-dl-icon.queued { display: flex; }
+/* Local video thumbnail */
+.file-thumb-video {
+  width: 100%; height: 100%; object-fit: cover; display: block;
+  pointer-events: none;
+}
+
+/* ── Files preview modal ── */
+#files-preview {
+  position: fixed; inset: 0; z-index: 9000;
+  background: rgba(0,0,0,.92);
+  display: none; align-items: center; justify-content: center;
+  cursor: zoom-out;
+}
+#files-preview.open { display: flex; }
+#files-preview img, #files-preview video {
+  max-width: 92vw; max-height: 92vh;
+  object-fit: contain; cursor: default;
+  box-shadow: 0 10px 40px rgba(0,0,0,.5);
+  border-radius: 4px;
+}
+#files-preview .files-preview-close,
+#files-preview .files-preview-nav {
+  position: absolute; width: 44px; height: 44px; border-radius: 50%;
+  background: rgba(255,255,255,.15); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px; cursor: pointer; border: none;
+  user-select: none;
+}
+#files-preview .files-preview-close:hover,
+#files-preview .files-preview-nav:hover { background: rgba(255,255,255,.3); }
+#files-preview .files-preview-close { top: 18px; right: 24px; width: 36px; height: 36px; font-size: 20px; }
+#files-preview .files-preview-download {
+  position: absolute; top: 18px; right: 70px;
+  width: 36px; height: 36px; border-radius: 50%;
+  background: rgba(255,255,255,.15); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 17px; cursor: pointer; border: none;
+}
+#files-preview .files-preview-download:hover { background: rgba(255,255,255,.3); }
+#files-preview .files-preview-delete {
+  position: absolute; top: 18px; right: 122px;
+  width: 36px; height: 36px; border-radius: 50%;
+  background: rgba(220,38,38,.55); color: #fff;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 15px; cursor: pointer; border: none;
+}
+#files-preview .files-preview-delete:hover { background: #b91c1c; }
+#files-preview .files-preview-nav.prev { left: 24px; top: 50%; transform: translateY(-50%); }
+#files-preview .files-preview-nav.next { right: 24px; top: 50%; transform: translateY(-50%); }
+#files-preview .files-preview-nav[disabled] { opacity: .25; cursor: default; }
+#files-preview .files-preview-counter {
+  position: absolute; top: 18px; left: 24px;
+  color: rgba(255,255,255,.7); font-size: 13px;
+  background: rgba(0,0,0,.4); padding: 4px 10px; border-radius: 4px;
+}
+/* 幻灯片控制条 */
+#files-preview .files-preview-slide {
+  position: absolute; top: 18px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px;
+  color: #fff; font-size: 12px;
+  background: rgba(0,0,0,.4); padding: 6px 12px; border-radius: 18px;
+}
+#files-preview .files-preview-slide button {
+  background: rgba(255,255,255,.15); color: #fff;
+  border: none; cursor: pointer; padding: 3px 9px; border-radius: 12px;
+  font-size: 11px;
+}
+#files-preview .files-preview-slide button.active { background: #047857; }
+#files-preview .files-preview-slide input[type=number] {
+  width: 44px; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.2);
+  color: #fff; padding: 2px 6px; border-radius: 4px; font-size: 12px; text-align: center;
+}
+#files-preview .files-preview-slide label {
+  display: flex; align-items: center; gap: 4px; cursor: pointer; font-size: 11px;
+}
+#files-preview .files-preview-info {
+  position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%);
+  color: rgba(255,255,255,.8); font-size: 12px;
+  background: rgba(0,0,0,.4); padding: 4px 10px; border-radius: 4px;
+}
+/* ── File download overlay ── */
+.file-dl-overlay {
+  position: absolute; inset: 0; z-index: 5;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  opacity: 0; pointer-events: none; transition: opacity .2s;
+}
+.file-card.downloading  .file-dl-overlay { opacity: 1; background: rgba(0,0,0,.5); }
+.file-card.saved        .file-dl-overlay { opacity: 1; background: rgba(5,150,105,.55); }
+.file-card.save-skipped .file-dl-overlay { opacity: 1; background: rgba(100,100,100,.55); }
+.file-card.save-error   .file-dl-overlay { opacity: 1; background: rgba(220,38,38,.5); }
+.file-dl-svg { width: 36px; height: 36px; overflow: visible; }
+.file-dl-track { stroke: rgba(255,255,255,.2); }
+.file-dl-prog {
+  stroke: #fff; stroke-linecap: round;
+  stroke-dasharray: 70 30.5;
+  transform-origin: 20px 20px;
+}
+.file-card.downloading .file-dl-prog { animation: ring-spin .9s linear infinite; }
+@keyframes ring-spin {
+  from { transform: rotate(-90deg); }
+  to   { transform: rotate(270deg); }
+}
+.file-card.saved      .file-dl-prog { stroke-dasharray: 100.5 0; transform: rotate(-90deg); animation: none; }
+.file-card.save-error .file-dl-prog { stroke-dasharray: 100.5 0; transform: rotate(-90deg); animation: none; stroke: rgba(255,255,255,.8); }
+.file-dl-icon {
+  position: absolute; inset: 0;
+  display: none; align-items: center; justify-content: center;
+  font-size: 14px; color: #fff; font-weight: 700;
+}
+.file-card.saved        .file-dl-icon.ok    { display: flex; }
+.file-card.save-skipped .file-dl-icon.skip  { display: flex; }
+.file-card.save-error   .file-dl-icon.err   { display: flex; }
+.file-card.queued       .file-dl-icon.queued { display: flex; }
 .files-load-more {
   display: flex; justify-content: center; padding: 16px 20px;
 }
@@ -618,7 +915,10 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
     <button class="nav-tab" onclick="switchView('settings')">设置</button>
   </div>
   <div class="nav-right">
-    <div class="quota-chip" id="quota-chip" onclick="refreshQuota()" title="点击刷新额度">
+    <span class="quota-chip" id="topbar-task-stats" onclick="switchView('generate');setSubTab('tasks')" title="点击查看任务队列" style="cursor:pointer;display:none">
+      <span id="topbar-task-text">—</span>
+    </span>
+    <div class="quota-chip" id="quota-chip" onclick="refreshQuota()" oncontextmenu="event.preventDefault();showQuotaDetails()" ondblclick="showQuotaDetails()" title="点击刷新；双击 / 右键查看详情（含 Chat 模型）">
       <span class="dot" id="quota-dot"></span>
       <span id="quota-label">额度</span>
     </div>
@@ -635,7 +935,7 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
     background:rgba(250,249,245,.92);backdrop-filter:blur(8px);
     border-bottom:1px solid var(--border);
     display:flex;align-items:center;gap:2px;padding:6px 20px;">
-    <button class="pill-btn active" data-st="stream" onclick="setSubTab('stream')" style="font-size:12px">连续生成</button>
+    <button class="pill-btn active" data-st="stream" onclick="setSubTab('stream')" style="font-size:12px">图片生成</button>
     <button class="pill-btn" data-st="tasks" onclick="setSubTab('tasks')" style="font-size:12px">任务队列</button>
   </div>
 
@@ -665,12 +965,8 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
           <textarea class="composer-textarea" id="gen-prompt" rows="2"
             placeholder="Type to imagine…  Enter 发送，Shift+Enter 换行"></textarea>
         </div>
-        <!-- Progress bar (shown when streaming) -->
-        <div class="gen-progress" id="gen-progress">
-          <span id="gen-progress-txt" style="white-space:nowrap;font-family:var(--font-mono);min-width:36px">0 张</span>
-          <div class="gen-progress-bar"><div class="gen-progress-fill" id="gen-progress-fill" style="width:0%"></div></div>
-          <span id="gen-progress-max" style="white-space:nowrap;color:var(--fg-subtle)"></span>
-        </div>
+        <!-- Progress bar removed: 等待图片返回，被审查时通过 toast 提示 -->
+        <div class="gen-progress" id="gen-progress" style="display:none"></div>
         <!-- Toolbar -->
         <div class="composer-toolbar">
           <div style="display:flex;align-items:center;gap:4px;flex:1;flex-wrap:wrap">
@@ -687,6 +983,7 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
             <span id="img-sep" style="width:1px;height:18px;background:var(--border-md);margin:0 3px;flex-shrink:0"></span>
             <button class="ctrl-btn active" data-q="speed" onclick="setQuality('speed')">Speed</button>
             <button class="ctrl-btn" data-q="quality" onclick="setQuality('quality')">Quality</button>
+            <button class="ctrl-btn" data-q="chat" onclick="setQuality('chat')" title="LLM 改写 prompt 后生图（绕过严格审核，慢但通过率高）">Chat</button>
             <!-- Video controls: resolution + duration (hidden in image mode) -->
             <span id="vid-sep1" style="display:none;width:1px;height:18px;background:var(--border-md);margin:0 3px;flex-shrink:0"></span>
             <button class="ctrl-btn active" id="v-480p" data-res="480p" style="display:none" onclick="setVideoRes('480p')">480p</button>
@@ -705,18 +1002,16 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
               <div class="ratio-popup" id="ratio-popup"></div>
             </div>
             <span style="width:1px;height:18px;background:var(--border-md);margin:0 3px;flex-shrink:0"></span>
-            <!-- Interval -->
-            <label style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:var(--fg-muted)">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
-              <input type="number" id="gen-interval" value="6" min="1" max="3600"
-                style="width:30px;height:22px;padding:0 3px;border-radius:5px;border:1px solid var(--border-md);background:var(--bg);font-size:11px;font-weight:600;text-align:center;color:var(--fg)">s
-            </label>
+            <!-- Interval（隐藏：作为后台默认值，每轮 6 秒） -->
+            <input type="hidden" id="gen-interval" value="6">
             <!-- Max images -->
-            <label style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:var(--fg-muted)">
-              最多
+            <label style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:var(--fg-muted)"
+              title="生成数量上限，达到后自动停止（speed 默认 6 / quality 默认 4 / video 固定 1）">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg>
+              生成
               <input type="number" id="gen-maximg" value="6" min="1" max="9999"
                 style="width:36px;height:22px;padding:0 3px;border-radius:5px;border:1px solid var(--border-md);background:var(--bg);font-size:11px;font-weight:600;text-align:center;color:var(--fg)"
-                title="speed 默认 6 / quality 默认 4 / video 固定 1">张
+                title="生成数量上限，达到后自动停止">张后停止
             </label>
           </div>
           <div style="display:flex;align-items:center;gap:8px;flex-shrink:0">
@@ -732,13 +1027,36 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
   </div>
 
   <!-- ── Queue panel ── -->
-  <div id="gen-panel-tasks" style="display:none;padding:calc(var(--nav-h) + 56px) 20px 32px;max-width:860px;margin:0 auto">
+  <div id="gen-panel-tasks" style="display:none;padding:calc(var(--nav-h) + 56px) 24px 32px;max-width:1400px;margin:0 auto">
     <div class="page-hd">
       <div class="page-title">任务队列</div>
-      <button class="btn btn-outline btn-sm" onclick="loadTasks()">↻ 刷新</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <select id="task-filter" onchange="taskFilterChange(this.value)"
+          style="font-size:12px;padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);cursor:pointer">
+          <option value="">全部状态</option>
+          <option value="running">▶ 运行中</option>
+          <option value="pending">⌛ 排队中</option>
+          <option value="paused">⏸ 已暂停</option>
+          <option value="done">✓ 已完成</option>
+          <option value="failed">❌ 失败</option>
+          <option value="cancelled">⊘ 已取消</option>
+          <option value="active">🔄 进行中（running+pending+paused）</option>
+          <option value="best_effort">💪 尽力模式中</option>
+          <option value="best_effort_eligible">💪 可启用尽力模式（failed+部分成功）</option>
+          <option value="origin_chat">💬 来源：Chat 模式</option>
+          <option value="origin_queue">📋 来源：任务面板</option>
+          <option value="origin_api">🔌 来源：外部 API</option>
+        </select>
+        <button class="btn btn-outline btn-sm" onclick="taskBulkResume()" title="把所有 paused / cancelled / failed 任务批量重启为 pending">▶ 全部继续</button>
+        <button class="btn btn-outline btn-sm" onclick="taskRetryAllFailed()" title="只重试 failed 状态的任务">↻ 重试所有失败</button>
+        <button class="btn btn-outline btn-sm" onclick="taskBulkBestEffort()" title="对所有 failed 且部分成功的任务批量启用尽力模式" style="background:#fef3c7;border-color:#fbbf24;color:#92400e">💪 全部尽力</button>
+        <button class="btn btn-outline btn-sm" onclick="taskBulkPause()" title="把所有 running / pending 任务批量暂停">⏸ 全部暂停</button>
+        <button class="btn btn-outline btn-sm" onclick="loadTasks()">↻ 刷新</button>
+      </div>
     </div>
     <div id="task-stats" class="task-stats" style="display:none"></div>
-    <div id="tasks-list"></div>
+    <div id="tasks-list" class="tasks-grid"></div>
+    <div id="tasks-pager" style="margin-top:14px;display:flex;gap:8px;align-items:center;justify-content:center;font-size:12px"></div>
   </div>
 
 </div>
@@ -750,6 +1068,10 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px;flex-wrap:wrap">
       <span style="font-size:20px;font-weight:700;letter-spacing:-.04em">图库</span>
       <div style="margin-left:auto;display:flex;gap:8px">
+        <button class="btn btn-outline btn-sm" id="gallery-select-btn" onclick="galleryToggleSelectMode()">🗹 选择</button>
+        <button class="btn btn-outline btn-sm" id="gallery-select-all" onclick="gallerySelectAll()" style="display:none">全选</button>
+        <button class="btn btn-danger btn-sm" id="gallery-del-sel" onclick="galleryDeleteSelected()" style="display:none">删除选中</button>
+        <span id="gallery-sel-count" style="display:none;font-size:12px;color:var(--fg-muted);align-self:center"></span>
         <button class="btn btn-outline btn-sm" onclick="loadSessions()">↻ 刷新</button>
         <button class="btn btn-outline btn-sm" id="dl-btn" style="display:none" onclick="downloadSession()">⬇ 下载全部</button>
       </div>
@@ -961,6 +1283,15 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
     </label>
     <span class="files-count" id="files-sel-count"></span>
     <div style="flex:1"></div>
+    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;font-weight:500;flex-shrink:0">
+      <input type="checkbox" id="files-sync-toggle" onchange="filesToggleSync(this.checked)" style="width:15px;height:15px;cursor:pointer">
+      自动同步
+    </label>
+    <span id="files-sync-status" class="files-sync-status" onclick="filesSyncDetails()" title="点击查看详情" style="display:none"></span>
+    <button class="btn btn-outline btn-sm" onclick="filesFullSync()" id="files-full-sync-btn">全量同步</button>
+    <button class="btn btn-outline btn-sm" onclick="filesSyncNow()" id="files-sync-now-btn">立即同步</button>
+    <button class="btn btn-outline btn-sm" onclick="filesWipeCloud()" id="files-wipe-btn"
+      style="color:#dc2626;border-color:#fca5a5" title="清空 Grok 云端所有文件（本地已下载文件保留）">⚠ 清空云端</button>
     <button class="btn btn-outline btn-sm" onclick="filesSaveLocal()" id="files-save-btn">保存到本地</button>
     <button class="btn btn-outline btn-sm" onclick="filesDeleteSelected()" id="files-del-btn"
       style="color:#dc2626;border-color:#fca5a5">删除选中</button>
@@ -973,6 +1304,34 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
   <div id="files-empty" style="display:none;text-align:center;padding:80px 20px;color:var(--fg-muted);font-size:14px">
     暂无 Grok 云端文件
   </div>
+</div>
+
+<!-- Generic modal (sync details, etc.) -->
+<div id="generic-modal" class="modal-backdrop" onclick="closeGenericModal(event)">
+  <div class="modal-card" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <div class="modal-title" id="generic-modal-title"></div>
+      <button class="modal-close" onclick="closeGenericModal()">×</button>
+    </div>
+    <div class="modal-body" id="generic-modal-body"></div>
+  </div>
+</div>
+
+<!-- Files preview modal -->
+<div id="files-preview" onclick="filesPreviewClose(event)">
+  <button class="files-preview-close" onclick="filesPreviewClose(event)" title="关闭">×</button>
+  <button class="files-preview-download" onclick="event.stopPropagation();filesPreviewDownload()" title="下载到本机">⬇</button>
+  <button class="files-preview-delete" onclick="event.stopPropagation();filesPreviewDelete()" title="删除该文件">🗑</button>
+  <button class="files-preview-nav prev" onclick="event.stopPropagation();filesPreviewNav(-1)">‹</button>
+  <button class="files-preview-nav next" onclick="event.stopPropagation();filesPreviewNav(1)">›</button>
+  <span class="files-preview-counter" id="files-preview-counter"></span>
+  <div class="files-preview-slide" onclick="event.stopPropagation()">
+    <button id="slide-toggle" onclick="filesSlideToggle()">▶ 播放</button>
+    <input type="number" id="slide-interval" min="1" max="60" value="3" onchange="filesSlidePersist()" title="切换间隔（秒）"> 秒
+    <label><input type="checkbox" id="slide-skip-video" checked onchange="filesSlidePersist()"> 跳过视频</label>
+  </div>
+  <div id="files-preview-content"></div>
+  <div class="files-preview-info" id="files-preview-info"></div>
 </div>
 
 <!-- Toast container -->
@@ -1070,6 +1429,20 @@ document.getElementById('login-key').addEventListener('keydown', e => {
 });
 
 // ── API ────────────────────────────────────────────────────────
+// textarea 高度跟随内容；CSS 的 min/max-height 起到上下限阀作用
+function _autosize(el) {
+  if (!el) return;
+  el.style.height = 'auto';
+  const max = parseInt(getComputedStyle(el).maxHeight) || 240;
+  el.style.height = Math.min(el.scrollHeight, max) + 'px';
+}
+function _attachAutosize(el) {
+  if (!el || el.dataset.autosizeAttached) return;
+  el.dataset.autosizeAttached = '1';
+  el.addEventListener('input', () => _autosize(el));
+  requestAnimationFrame(() => _autosize(el));
+}
+
 async function api(method, path, body) {
   const opts = { method, headers: { 'Authorization': 'Bearer ' + getKey() } };
   if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
@@ -1327,7 +1700,8 @@ window.generateVideo = async function() {
 
   const body = { prompt, resolution: S.videoRes, duration: S.videoDur, aspect_ratio: S.ratio };
   if (S.attachedImage) body.image_data = S.attachedImage.dataUrl;
-  document.getElementById('gen-prompt').value = '';
+  const _gpV = document.getElementById('gen-prompt');
+  _gpV.value = ''; _autosize(_gpV);
   removeAttachment();
 
   let videoId;
@@ -1389,16 +1763,105 @@ document.getElementById('gen-prompt').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
 });
 
+// ── Chat-imagine（LLM rephrase 模式） ───────────────────────────
+async function _runChatImagine(prompt, imageCount) {
+  const tempId = 'chat-imagine-' + Date.now();
+  document.getElementById('gen-empty').style.display = 'none';
+  const feed = document.getElementById('gen-feed');
+  const block = document.createElement('div');
+  block.id = 'session-block-' + tempId;
+  block.className = 'session-block';
+  block.innerHTML = `
+    <div class="session-head">
+      <div class="session-prompt">${esc(prompt)} <span style="font-size:11px;color:#1d4ed8;background:#dbeafe;padding:1px 6px;border-radius:3px;margin-left:6px">CHAT</span></div>
+      <div class="session-chips"><span class="chip dark" id="${tempId}-chip">⏳ LLM 改写中…</span></div>
+    </div>
+    <div class="stream-grid" id="${tempId}-grid"></div>`;
+  feed.appendChild(block);
+  _addStreamSkeletons(document.getElementById(tempId + '-grid'), Math.min(imageCount, 4));
+  block.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  try {
+    const d = await api('POST', '/v1/images/chat-imagine', {
+      prompt, image_count: imageCount, aspect_ratio: S.ratio || '1:1',
+    });
+    // 过滤掉 prompt:// 等伪 URL，仅保留 assets.grok.com 真实图片
+    const urls = (d.image_urls || []).filter(u => u && /assets\.grok\.com\//.test(u));
+    const grid = document.getElementById(tempId + '-grid');
+    if (!urls.length) {
+      document.getElementById(tempId + '-chip').textContent = '⚠ 未拿到图片 URL';
+      grid.innerHTML = `<div class="masonry-tile" style="padding:20px;color:#b45309;text-align:center">
+        <div style="font-weight:500">LLM 已响应但未返回图片（被审或 LLM 拒绝）</div></div>`;
+      return;
+    }
+    grid.innerHTML = urls.map(u => {
+      const m = u.match(/assets\.grok\.com\/(.+)$/);
+      const key = m ? m[1] : '';
+      const proxied = `/v1/grok/assets/download?key=${encodeURIComponent(key)}&inline=1&api_key=${encodeURIComponent(getKey())}`;
+      // 用 <a href>：photoswipe 通过 href 拿放大用的高清 URL，无 href 就放大失败
+      return `<a class="masonry-tile pswp-item" href="${proxied}" data-pswp-width="1024" data-pswp-height="1024">
+        <img src="${proxied}" loading="lazy" style="width:100%;display:block">
+      </a>`;
+    }).join('');
+    document.getElementById(tempId + '-chip').textContent = `✓ ${urls.length} 张`;
+  } catch (e) {
+    const raw = String(e.message || '生成失败');
+    // 错误中把 LLM 实际回复拼在 " — LLM 回复：..." 之后，分离显示
+    const sepIdx = raw.indexOf(' — LLM 回复：');
+    const head = sepIdx >= 0 ? raw.slice(0, sepIdx) : raw;
+    const llmReply = sepIdx >= 0 ? raw.slice(sepIdx + ' — LLM 回复：'.length) : '';
+    // 三种状态：
+    //   image_moderated → Grok 后端拦截（LLM 已下发生图意图但没产出）
+    //   chat_no_image    → LLM 直接拒绝（safety / decline，没下发任何意图）
+    //   其他             → 普通失败
+    const isModerated = /image_moderated|内容审核拦截|imagine 后端未产出/i.test(raw);
+    const isLlmDecline = !isModerated && /chat_no_image|未下发任何生图意图|declined|decline/i.test(raw);
+    let chipText, headTitle, headColor;
+    if (isModerated) {
+      chipText = '⚠ Grok 内容审核';
+      headTitle = '⚠ 被 Grok 内容审核拦截';
+      headColor = '#b45309';  // 琥珀
+    } else if (isLlmDecline) {
+      chipText = '⚠ LLM 拒绝';
+      headTitle = '⚠ LLM 拒绝生成（safety/decline）';
+      headColor = '#7f1d1d';  // 暗红
+    } else {
+      chipText = '❌ 失败';
+      headTitle = '❌ 生成失败';
+      headColor = '#7f1d1d';
+    }
+    document.getElementById(tempId + '-chip').textContent = chipText;
+    const bgCol = isModerated ? '#fff7ed' : '#fef2f2';
+    const borderCol = isModerated ? '#fed7aa' : '#fecaca';
+    const grid = document.getElementById(tempId + '-grid');
+    grid.innerHTML = `<div class="masonry-tile" style="grid-column:1/-1;padding:18px;background:${bgCol};border:1px solid ${borderCol};border-radius:10px;color:${headColor};text-align:left;line-height:1.55;word-break:break-word;overflow-wrap:anywhere">
+      <div style="font-weight:600;margin-bottom:6px;font-size:13px">${headTitle}</div>
+      <div style="font-size:12px">${esc(head)}</div>
+      ${llmReply ? `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:${headColor}">LLM 实际回复 ▾</summary><div style="margin-top:6px;padding:10px;background:#fff;border-radius:6px;font-size:12px;color:#374151;white-space:pre-wrap">${esc(llmReply)}</div></details>` : ''}
+    </div>`;
+    toast(chipText, 'error');
+  }
+}
+
 // ── Stream ─────────────────────────────────────────────────────
 window.startStream = async function startStream() {
   const prompt = document.getElementById('gen-prompt').value.trim();
   if (!prompt) { toast('请输入提示词', 'error'); return; }
+  // Chat 模式走 LLM rephrase 路径，不启动 stream
+  if (S.quality === 'chat') {
+    const maxImg = parseInt(document.getElementById('gen-maximg').value) || 2;
+    const _gp = document.getElementById('gen-prompt');
+    _gp.value = ''; _autosize(_gp);
+    removeAttachment();
+    _runChatImagine(prompt, Math.max(maxImg, 1));
+    return;
+  }
   const model = S.quality === 'quality' ? 'grok-imagine-pro' : 'grok-imagine';
   const size = SIZE_MAP[S.ratio] || '1024x1792';
   const interval = parseFloat(document.getElementById('gen-interval').value) || 6;
   const maxImg = parseInt(document.getElementById('gen-maximg').value) || 0;
-  const maxRounds = maxImg > 0 ? Math.max(1, Math.ceil(maxImg / 4)) : -1;
-  const body = { prompt, model, size, interval_seconds: interval, max_rounds: maxRounds };
+  // max_rounds 作兜底（按 4 张/批估算）；max_images 才是精确停止条件
+  const maxRounds = maxImg > 0 ? Math.max(1, Math.ceil(maxImg / 4) + 2) : -1;
+  const body = { prompt, model, size, interval_seconds: interval, max_rounds: maxRounds, max_images: maxImg };
   if (S.attachedImage) body.image_data = S.attachedImage.dataUrl;
   S.streamMaxImg = maxImg;
   S.streamImageCount = 0;
@@ -1409,7 +1872,8 @@ window.startStream = async function startStream() {
     S.streamSessionId = d.session_id;
     updateStreamUI(true);
     startStreamPoll();
-    document.getElementById('gen-prompt').value = '';
+    const _gp = document.getElementById('gen-prompt');
+    _gp.value = ''; _autosize(_gp);
     removeAttachment();
     // 立即建立 session block 并显示骨架屏
     document.getElementById('gen-empty').style.display = 'none';
@@ -1447,42 +1911,35 @@ function updateStreamUI(running) {
   S.streamRunning = running;
   document.getElementById('stop-btn').style.display = running ? '' : 'none';
   document.getElementById('send-btn').disabled = running;
-  const prog = document.getElementById('gen-progress');
-  if (prog) prog.style.display = running ? 'flex' : 'none';
-  if (running) updateProgressDisplay();
+  // 进度条已移除：用户等图即可，被审查/失败时通过 toast 提示
 }
 
-function updateProgressDisplay() {
-  const count = S.streamImageCount;
-  const max = S.streamMaxImg;
-  const txt = document.getElementById('gen-progress-txt');
-  const fill = document.getElementById('gen-progress-fill');
-  const maxEl = document.getElementById('gen-progress-max');
-  if (!txt) return;
-  txt.textContent = count + ' 张';
-  if (max > 0) {
-    if (fill) fill.style.width = Math.min(100, (count / max) * 100) + '%';
-    if (maxEl) maxEl.textContent = '/ ' + max;
-  } else {
-    if (fill) fill.style.width = '0%';
-    if (maxEl) maxEl.textContent = '持续生成中';
-  }
-}
+function updateProgressDisplay() { /* no-op：进度条已移除 */ }
 
 let streamPollTimer = null;
 function startStreamPoll() {
   clearInterval(streamPollTimer);
+  let lastError = '';
   streamPollTimer = setInterval(async () => {
     try {
       const d = await api('GET', '/v1/images/stream/status');
       if (d.success_count != null && d.success_count !== S.streamImageCount) {
         S.streamImageCount = d.success_count;
-        if (S.streamRunning) updateProgressDisplay();
+      }
+      // 检测被审查 / silent_block / 失败 → 弹 toast
+      if (d.last_error && d.last_error !== lastError) {
+        lastError = d.last_error;
+        const isModerated = /silent_block|moderat|content moderation|blocked|审/i.test(d.last_error);
+        toast(isModerated ? '⚠ 该提示词疑似被 Grok 内容审核拦截，请修改后重试' : ('生成失败: ' + d.last_error.slice(0, 100)), 'error');
       }
       if (!d.running && S.streamRunning) {
         updateStreamUI(false);
         clearInterval(streamPollTimer);
         document.querySelectorAll('.stream-tile-skeleton').forEach(el => el.remove());
+        if (S.streamImageCount === 0 && d.last_error) {
+          // 一张都没出过 + 有错误：再次确认提示
+          toast('本次生成无任何图片产出', 'error');
+        }
       }
       if (d.success_count > 0 && S.view === 'generate') refreshGenFeed();
     } catch {}
@@ -1597,6 +2054,7 @@ window.loadSessions = async function() {
   try {
     const d = await api('GET', '/v1/images/sessions');
     const sessions = d.sessions || [];
+    window._sessionsCache = sessions;  // 供 selectSession 查找 prompt
     const allBtn = `<div id="sess-all" onclick="selectAllSessions()" style="padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:var(--bg-card);cursor:pointer;transition:border-color .15s;font-size:13px;font-weight:600"
       onmouseover="this.style.borderColor='#aaa'" onmouseout="if(S.gallerySession!==null)this.style.borderColor='var(--border)'">
       全部图片
@@ -1606,10 +2064,10 @@ window.loadSessions = async function() {
       <div style="padding:10px 12px;border-radius:10px;border:1px solid var(--border);background:var(--bg-card);transition:border-color .15s;overflow:hidden;min-width:0"
         id="sess-${esc(s.session_id)}"
         onmouseover="this.style.borderColor='#aaa'" onmouseout="this.style.borderColor='var(--border)'">
-        <div onclick="selectSession('${esc(s.session_id)}','${esc(s.prompt)}')" style="cursor:pointer;min-width:0">
+        <div onclick="selectSession('${esc(s.session_id)}')" style="cursor:pointer;min-width:0">
           <div style="font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%">${esc(s.prompt || '无提示词')}</div>
           <div style="font-size:11px;color:var(--fg-subtle);margin-top:3px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-            <span>${s.image_count} 张</span>${s.model ? `<span style="font-family:monospace;background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;padding:1px 5px;border-radius:4px;font-size:10px">${esc(s.model)}</span>` : ''}<span>${fmtDate(s.created_at)}</span>
+            <span>${s.image_count} 张</span>${(s.moderated_count||0) > 0 ? `<span style="color:#b91c1c" title="被 Grok 内容审核拦截">⚠ ${s.moderated_count} 审</span>` : ''}${(s.failed_count||0) > 0 ? `<span style="color:#b45309" title="网络/超时/其他错误">⚠ ${s.failed_count} 错</span>` : ''}${s.model ? `<span style="font-family:monospace;background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;padding:1px 5px;border-radius:4px;font-size:10px">${esc(s.model)}</span>` : ''}<span>${fmtDate(s.created_at)}</span>
           </div>
         </div>
         <div style="display:flex;gap:4px;margin-top:7px">
@@ -1644,6 +2102,11 @@ window.selectAllSessions = function() {
 
 window.selectSession = function(sid, prompt) {
   S.gallerySession = sid;
+  // 若 prompt 未传入，从缓存查
+  if (prompt === undefined) {
+    const sess = (window._sessionsCache || []).find(s => s.session_id === sid);
+    prompt = sess?.prompt || '';
+  }
   S.galleryPrompt = prompt || '';
   S.galleryOffset = 0;
   S.galleryTotal = 0;
@@ -1700,15 +2163,32 @@ async function loadGallery(append = false) {
     items.forEach(item => {
       const el = document.createElement(item.file_type === 'video' ? 'div' : 'a');
       el.className = 'masonry-tile' + (item.file_type !== 'video' ? ' pswp-item' : '');
+      el.dataset.session = item.session_id;
+      el.dataset.filename = item.filename;
+      const delBtn = `<button class="gallery-tile-del" title="删除该文件" onclick="event.preventDefault();event.stopPropagation();galleryDeleteFile(this)">🗑</button>`;
+      const checkOverlay = '<div class="tile-check"></div>';
       if (item.file_type === 'video') {
-        el.innerHTML = _videoTileHtml(item.url);
+        el.innerHTML = _videoTileHtml(item.url) + delBtn + checkOverlay;
         el.style.cursor = 'default';
       } else {
         el.href = item.url;
         el.dataset.pswpWidth = '1024'; el.dataset.pswpHeight = '1024';
-        el.innerHTML = `<img src="${esc(item.url)}" loading="lazy" alt="">`;
+        el.innerHTML = `<img src="${esc(item.url)}" loading="lazy" alt="">${delBtn}${checkOverlay}`;
         _attachDims(el);
       }
+      // 选择模式 → 切换选中；非选择模式 → 打开预览模态（带幻灯片功能）
+      el.addEventListener('click', (ev) => {
+        if (grid.classList.contains('select-mode')) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          el.classList.toggle('tile-selected');
+          _updateGallerySelCount();
+        } else {
+          ev.preventDefault();
+          ev.stopPropagation();
+          galleryPreviewOpen(el);
+        }
+      });
       grid.appendChild(el);
     });
     S.galleryOffset += items.length;
@@ -1722,31 +2202,143 @@ async function loadGallery(append = false) {
 
 window.loadMoreGallery = () => loadGallery(true);
 
+// 进入 Files 时恢复"正在删除/排队删除"的卡片状态（页面刷新后也能看到进度）
+async function _restoreInflightDeletes() {
+  try {
+    const since = Date.now()/1000 - 3600;  // 最近 1h
+    const d = await api('GET', `/v1/grok-files/deletes?since=${since}`);
+    for (const job of (d.deletes || [])) {
+      if (job.status !== 'pending' && job.status !== 'running') continue;
+      const card = document.querySelector(`#files-grid .file-card[data-id="${job.asset_id}"]`);
+      if (!card) continue;
+      card.classList.remove('selected');
+      card.classList.add(job.status === 'running' ? 'deleting' : 'queued-del');
+      _delPendingCards.set(job.asset_id, card);
+    }
+    if (_delPendingCards.size > 0 && !_delPollTimer) {
+      // 启动轮询接管
+      _delPollTimer = setInterval(async () => {
+        if (_delPendingCards.size === 0) {
+          clearInterval(_delPollTimer); _delPollTimer = null; return;
+        }
+        try {
+          const since2 = Date.now()/1000 - 3600;
+          const d2 = await api('GET', `/v1/grok-files/deletes?since=${since2}`);
+          for (const job of (d2.deletes || [])) {
+            const c = _delPendingCards.get(job.asset_id);
+            if (!c) continue;
+            if (job.status === 'done') {
+              _delPendingCards.delete(job.asset_id);
+              c.classList.remove('queued-del', 'deleting', 'selected');
+              c.classList.add('cloud-deleted-mark');
+            } else if (job.status === 'failed') {
+              _delPendingCards.delete(job.asset_id);
+              c.classList.remove('queued-del', 'deleting');
+              c.classList.add('save-error');
+            } else if (job.status === 'running') {
+              c.classList.remove('queued-del');
+              c.classList.add('deleting');
+            }
+          }
+        } catch {}
+      }, 2000);
+    }
+  } catch {}
+}
+
+window.galleryToggleSelectMode = function() {
+  const grid = document.getElementById('gallery-grid');
+  const on = !grid.classList.contains('select-mode');
+  grid.classList.toggle('select-mode', on);
+  document.getElementById('gallery-select-btn').textContent = on ? '✕ 退出选择' : '🗹 选择';
+  document.getElementById('gallery-select-all').style.display = on ? '' : 'none';
+  document.getElementById('gallery-del-sel').style.display = on ? '' : 'none';
+  document.getElementById('gallery-sel-count').style.display = on ? '' : 'none';
+  if (!on) {
+    grid.querySelectorAll('.tile-selected').forEach(el => el.classList.remove('tile-selected'));
+  }
+  _updateGallerySelCount();
+};
+
+window.gallerySelectAll = function() {
+  const tiles = [...document.querySelectorAll('#gallery-grid .masonry-tile')];
+  const allSelected = tiles.every(t => t.classList.contains('tile-selected'));
+  tiles.forEach(t => t.classList.toggle('tile-selected', !allSelected));
+  _updateGallerySelCount();
+};
+
+function _updateGallerySelCount() {
+  const n = document.querySelectorAll('#gallery-grid .masonry-tile.tile-selected').length;
+  const el = document.getElementById('gallery-sel-count');
+  if (el) el.textContent = n > 0 ? `已选 ${n}` : '';
+}
+
+window.galleryDeleteSelected = async function() {
+  const tiles = [...document.querySelectorAll('#gallery-grid .masonry-tile.tile-selected')];
+  if (!tiles.length) { toast('未选中任何文件', 'error'); return; }
+  if (!confirm(`确认删除已选中的 ${tiles.length} 个文件？`)) return;
+  const btn = document.getElementById('gallery-del-sel');
+  btn.disabled = true;
+  let ok = 0, fail = 0;
+  // 并发 3 控制
+  let qi = 0;
+  async function worker() {
+    while (qi < tiles.length) {
+      const tile = tiles[qi++];
+      try {
+        await api('DELETE', `/v1/images/file/${encodeURIComponent(tile.dataset.session)}/${encodeURIComponent(tile.dataset.filename)}`);
+        tile.classList.add('deleted');
+        setTimeout(() => tile.remove(), 280);
+        ok++;
+      } catch { fail++; }
+      btn.textContent = `删除中 ${ok + fail}/${tiles.length}…`;
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(3, tiles.length) }, worker));
+  await new Promise(r => setTimeout(r, 300));
+  btn.disabled = false; btn.textContent = '删除选中';
+  if (fail > 0) toast(`已删除 ${ok} 个，${fail} 个失败`, ok > 0 ? '' : 'error');
+  else toast(`已删除 ${ok} 个文件`, 'success');
+  _updateGallerySelCount();
+};
+
+window.galleryDeleteFile = async function(btn) {
+  const tile = btn.closest('.masonry-tile');
+  if (!tile) return;
+  const sid = tile.dataset.session;
+  const fn = tile.dataset.filename;
+  if (!sid || !fn) return;
+  if (!confirm(`确认删除该文件？\n${fn}`)) return;
+  btn.disabled = true; btn.textContent = '…';
+  try {
+    await api('DELETE', `/v1/images/file/${encodeURIComponent(sid)}/${encodeURIComponent(fn)}`);
+    tile.classList.add('deleted');
+    setTimeout(() => tile.remove(), 280);
+    toast('已删除', 'success');
+  } catch(e) {
+    btn.disabled = false; btn.textContent = '🗑';
+    toast('删除失败: ' + e.message, 'error');
+  }
+};
+
+// 一次性 IntersectionObserver — 持续监听 gallery-sentinel；触发时若还有更多就拉，
+// 不在中间 disconnect/reconnect 切换
 let sentinelObs = null;
+let _galleryLoading = false;
 function setupSentinel() {
-  if (sentinelObs) { sentinelObs.disconnect(); sentinelObs = null; }
-  if (S.galleryOffset >= S.galleryTotal) return;
-
-  // Wait for current images to load before activating sentinel
-  const imgs = document.querySelectorAll('#gallery-grid img');
-  const pending = [...imgs].filter(img => !img.complete);
-
-  const activate = () => {
-    sentinelObs = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting) { sentinelObs.disconnect(); sentinelObs = null; loadGallery(true); }
-    }, { rootMargin: '300px' });
-    sentinelObs.observe(document.getElementById('gallery-sentinel'));
-  };
-
-  if (!pending.length) { activate(); return; }
-  let loaded = 0;
-  pending.forEach(img => {
-    const done = () => { if (++loaded >= pending.length) activate(); };
-    img.addEventListener('load', done, { once: true });
-    img.addEventListener('error', done, { once: true });
-  });
-  // Failsafe timeout
-  setTimeout(activate, 8000);
+  // 首次安装；之后保持，loadGallery 自身控制并发
+  if (sentinelObs) return;
+  const sent = document.getElementById('gallery-sentinel');
+  if (!sent) return;
+  sentinelObs = new IntersectionObserver(async (entries) => {
+    if (!entries[0].isIntersecting) return;
+    if (_galleryLoading) return;
+    if (S.galleryOffset >= S.galleryTotal) return;
+    _galleryLoading = true;
+    try { await loadGallery(true); }
+    finally { _galleryLoading = false; }
+  }, { rootMargin: '600px 0px' });
+  sentinelObs.observe(sent);
 }
 
 // ── Download session ───────────────────────────────────────────
@@ -1827,7 +2419,7 @@ window.sendToQueue = async function() {
   const maxImg = parseInt(document.getElementById('gen-maximg').value) || 0;
   const targetCount = maxImg > 0 ? maxImg : 20;
   try {
-    await api('POST', '/v1/images/tasks', { prompt, model, target_count: targetCount, size, interval_seconds: interval });
+    await api('POST', '/v1/images/tasks', { prompt, model, target_count: targetCount, size, interval_seconds: interval, origin: 'chat' });
     document.getElementById('gen-prompt').value = '';
     removeAttachment();
     toast(`已加入队列：${targetCount} 张`, 'success');
@@ -1846,6 +2438,7 @@ window.addTask = async function() {
       target_count: parseInt(document.getElementById('q-count').value) || 20,
       size: document.getElementById('q-size').value,
       interval_seconds: parseFloat(document.getElementById('q-interval').value) || 6,
+      origin: 'queue',
     });
     toast('已加入队列', 'success');
     document.getElementById('q-prompt').value = '';
@@ -1853,11 +2446,29 @@ window.addTask = async function() {
   } catch (e) { toast('添加失败: ' + e.message, 'error'); }
 };
 
+// 任务队列分页 + 筛选状态
+const _taskPg = {
+  page: 0,
+  pageSize: parseInt(localStorage.getItem('task-page-size') || '20'),
+  total: 0,
+  filter: localStorage.getItem('task-filter') || '',
+};
+
+window.taskFilterChange = function(v) {
+  _taskPg.filter = v || '';
+  _taskPg.page = 0;
+  localStorage.setItem('task-filter', _taskPg.filter);
+  loadTasks();
+};
+
 window.loadTasks = async function() {
   try {
     const d = await api('GET', '/v1/images/tasks');
-    const tasks = d.tasks || [];
+    const allTasks = d.tasks || [];
     const stats = d.stats || {};
+    allTasks.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+
+    _updateTopStats(stats);
     const el = document.getElementById('task-stats');
     if (stats.total > 0) {
       el.style.display = '';
@@ -1865,40 +2476,231 @@ window.loadTasks = async function() {
         Object.entries(stats.by_status || {}).map(([k,v]) => `${k} ${v}`).join('  ·  ');
     } else el.style.display = 'none';
 
+    // 同步下拉框选中状态（首次进入页面时）
+    const filterSel = document.getElementById('task-filter');
+    if (filterSel && filterSel.value !== _taskPg.filter) filterSel.value = _taskPg.filter;
+
+    // 应用状态筛选
+    let filtered = allTasks;
+    if (_taskPg.filter) {
+      if (_taskPg.filter === 'active') {
+        filtered = allTasks.filter(t => ['running', 'pending', 'paused'].includes(t.status));
+      } else if (_taskPg.filter === 'best_effort') {
+        filtered = allTasks.filter(t => (t.attempt_cap || 0) > 0 && !['done','cancelled'].includes(t.status));
+      } else if (_taskPg.filter === 'best_effort_eligible') {
+        filtered = allTasks.filter(t => t.status === 'failed' && (
+          (t.generated_count || 0) >= 2 ||
+          ((t.target_count || 0) > 0 && (t.generated_count || 0) * 5 >= t.target_count)
+        ));
+      } else if (_taskPg.filter === 'origin_chat') {
+        filtered = allTasks.filter(t => (t.origin || 'queue') === 'chat');
+      } else if (_taskPg.filter === 'origin_queue') {
+        filtered = allTasks.filter(t => (t.origin || 'queue') === 'queue');
+      } else if (_taskPg.filter === 'origin_api') {
+        filtered = allTasks.filter(t => (t.origin || 'queue') === 'api');
+      } else {
+        filtered = allTasks.filter(t => t.status === _taskPg.filter);
+      }
+    }
+
+    _taskPg.total = filtered.length;
+    const start = _taskPg.page * _taskPg.pageSize;
+    const tasks = filtered.slice(start, start + _taskPg.pageSize);
+
     const list = document.getElementById('tasks-list');
-    if (!tasks.length) { list.innerHTML = '<div style="text-align:center;padding:32px 0;color:var(--fg-subtle);font-size:14px">队列为空</div>'; return; }
-    list.innerHTML = tasks.map((t, i) => {
+    if (!allTasks.length) {
+      list.innerHTML = '<div style="text-align:center;padding:32px 0;color:var(--fg-subtle);font-size:14px">队列为空</div>';
+      _renderTaskPager();
+      return;
+    }
+    if (!filtered.length) {
+      list.innerHTML = `<div style="text-align:center;padding:32px 0;color:var(--fg-subtle);font-size:14px">当前筛选「${esc(_taskPg.filter)}」无匹配任务（共 ${allTasks.length} 个）</div>`;
+      _renderTaskPager();
+      return;
+    }
+    list.innerHTML = tasks.map((t) => {
       const pct = t.target_count > 0 ? Math.min(100, Math.round(t.generated_count / t.target_count * 100)) : 0;
       const canPause = ['running','pending'].includes(t.status);
       const canResume = t.status === 'paused';
-      const canCancel = !['done','cancelled','failed'].includes(t.status);
-      return `<div class="task-card">
+      const modCount = t.moderated_count || 0;
+      const failCount = t.failed_count || 0;
+      const attemptCap = t.attempt_cap || 0;
+      const totalAttempts = t.generated_count + modCount + failCount;
+      const inBestEffort = attemptCap > 0 && t.status !== 'done' && t.status !== 'cancelled';
+      // 尽力模式按钮触发条件：
+      // 1. failed 状态 + (>=2 张成功 或 >=20% 成功率)
+      // 2. done 状态但 generated_count < target_count（被审核拦截太多导致提前判完成）
+      const partialSuccess = t.generated_count >= 2 || (t.target_count > 0 && t.generated_count * 5 >= t.target_count);
+      const eligibleBestEffort = (
+        (t.status === 'failed' && partialSuccess)
+        || (t.status === 'done' && t.generated_count < t.target_count && partialSuccess && (t.attempt_cap || 0) === 0)
+      );
+      const kindBadge = t.kind === 'stream' ? '<span style="font-size:10px;background:#dbeafe;color:#1d4ed8;padding:1px 5px;border-radius:3px;margin-left:4px">STREAM</span>' : '';
+      // 来源徽章：chat / api 突出显示，queue 为默认不显示徽章
+      const origin = t.origin || 'queue';
+      const originBadge = origin === 'chat'
+        ? '<span style="font-size:10px;background:#dbeafe;color:#1d4ed8;padding:1px 5px;border-radius:3px;margin-left:4px" title="从 Chat 输入框 + 队列发起">💬 CHAT</span>'
+        : (origin === 'api'
+          ? '<span style="font-size:10px;background:#f1f5f9;color:#475569;padding:1px 5px;border-radius:3px;margin-left:4px" title="外部 API 提交">🔌 API</span>'
+          : '');
+      const beBadge = inBestEffort
+        ? `<span style="font-size:10px;background:#fef3c7;color:#92400e;padding:1px 5px;border-radius:3px;margin-left:4px" title="尽力模式：已尝试 ${totalAttempts}/${attemptCap}">💪 尽力</span>`
+        : '';
+      // 媒体类型 + 模型徽章（task_queue 当前只跑图片；预留 video 字段以后可显式标记）
+      const mediaType = t.media_type || 'image';
+      const isVideo = mediaType === 'video';
+      const typeBadge = isVideo
+        ? '<span style="font-size:10px;background:#ede9fe;color:#6d28d9;padding:1px 5px;border-radius:3px;margin-left:4px" title="视频任务">🎬 视频</span>'
+        : '<span style="font-size:10px;background:#dcfce7;color:#15803d;padding:1px 5px;border-radius:3px;margin-left:4px" title="图片任务">🖼 图片</span>';
+      const modelName = t.model || (isVideo ? 'grok-video' : (t.enable_pro ? 'grok-imagine-pro' : 'grok-imagine'));
+      const modelBadge = `<span style="font-size:10px;font-family:monospace;background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;padding:1px 5px;border-radius:3px;margin-left:4px" title="模型">${esc(modelName)}</span>`;
+      const badges = [];
+      if (modCount > 0) badges.push(`<span style="font-size:11px;color:#b91c1c;margin-left:8px" title="被 Grok 内容审核拦截">⚠ ${modCount} 审</span>`);
+      if (failCount > 0) badges.push(`<span style="font-size:11px;color:#b45309;margin-left:6px" title="网络/超时/其他错误">⚠ ${failCount} 错</span>`);
+      if (inBestEffort) badges.push(`<span style="font-size:11px;color:#92400e;margin-left:6px" title="尽力模式预算">尝试 ${totalAttempts}/${attemptCap}</span>`);
+      const noteHtml = (t.status === 'done' && (modCount > 0 || t.generated_count < t.target_count) && t.error) ?
+        `<div style="font-size:11px;color:var(--fg-muted);margin-top:4px">${esc(t.error)}</div>` : '';
+      const errHtml = (t.status === 'failed' && t.error) ?
+        `<div style="font-size:11px;color:#b91c1c;margin-top:4px" title="${esc(t.error)}">⚠ ${esc(t.error.slice(0, 100))}</div>` : '';
+      return `<div class="task-card" data-tid="${t.id}">
         <div class="task-top">
-          <span class="status-badge ${t.status}">${t.status}</span>
+          <span class="status-badge ${t.status}">${t.status}</span>${typeBadge}${modelBadge}${originBadge}${kindBadge}${beBadge}
           <span class="task-prompt-text">${esc(t.prompt)}</span>
         </div>
         <div class="progress-row">
           <div class="progress-track"><div class="progress-fill${t.status==='done'?' done':''}" style="width:${pct}%"></div></div>
-          <span class="progress-text">${t.generated_count}/${t.target_count}</span>
+          <span class="progress-text">${t.generated_count}/${t.target_count}${badges.join('')}</span>
         </div>
+        ${noteHtml}${errHtml}
         <div class="task-actions">
-          ${i > 0 ? `<button class="btn btn-outline btn-sm" onclick="taskMove('${t.id}','up')">↑</button>` : ''}
-          ${i < tasks.length-1 ? `<button class="btn btn-outline btn-sm" onclick="taskMove('${t.id}','down')">↓</button>` : ''}
+          <button class="btn btn-outline btn-sm" onclick="taskMove('${t.id}','up')">↑</button>
+          <button class="btn btn-outline btn-sm" onclick="taskMove('${t.id}','down')">↓</button>
           ${canPause ? `<button class="btn btn-outline btn-sm" onclick="taskPause('${t.id}')">暂停</button>` : ''}
           ${canResume ? `<button class="btn btn-outline btn-sm" onclick="taskResume('${t.id}')">恢复</button>` : ''}
-          ${t.status === 'done' ? `<button class="btn btn-outline btn-sm" onclick="viewTaskSession('${t.session_id}','${esc(t.prompt)}')">查看图片</button>` : ''}
+          ${(t.status === 'failed' || t.status === 'cancelled') ? `<button class="btn btn-outline btn-sm" onclick="taskRetry('${t.id}')" title="原地重置后继续生成">重试</button>` : ''}
+          ${eligibleBestEffort ? `<button class="btn btn-outline btn-sm" onclick="taskBestEffort('${t.id}')" title="保留已完成进度，再尝试 ${t.target_count * 5} 次（成功达标或耗尽预算即结束）" style="background:#fef3c7;border-color:#fbbf24;color:#92400e">💪 尽力模式</button>` : ''}
+          ${t.status === 'failed' ? `<button class="btn btn-outline btn-sm" onclick="taskClose('${t.id}')" title="标记为完成（保留错误信息），不再重试">✓ 关闭</button>` : ''}
+          ${t.status === 'done' ? `<button class="btn btn-outline btn-sm" onclick="viewTaskSession('${t.session_id}')">查看图片</button>` : ''}
+          <button class="btn btn-outline btn-sm" onclick="taskCopyPrompt(this)" title="复制提示词到剪贴板">📋 复制</button>
           <button class="btn btn-danger btn-sm" onclick="taskDelete('${t.id}')">删除</button>
         </div>
       </div>`;
     }).join('');
+    _renderTaskPager();
   } catch (e) { toast('加载队列失败: ' + e.message, 'error'); }
+};
+
+function _renderTaskPager() {
+  const pg = document.getElementById('tasks-pager');
+  if (!pg) return;
+  const totalPages = Math.max(1, Math.ceil(_taskPg.total / _taskPg.pageSize));
+  if (_taskPg.page >= totalPages) _taskPg.page = totalPages - 1;
+  pg.innerHTML = `
+    <button class="btn btn-outline btn-sm" ${_taskPg.page === 0 ? 'disabled' : ''} onclick="taskPgGo(${_taskPg.page - 1})">‹ 上一页</button>
+    <span style="color:var(--fg-muted)">第 ${_taskPg.page + 1} / ${totalPages} 页（共 ${_taskPg.total}）</span>
+    <button class="btn btn-outline btn-sm" ${_taskPg.page >= totalPages - 1 ? 'disabled' : ''} onclick="taskPgGo(${_taskPg.page + 1})">下一页 ›</button>
+    <select onchange="taskPgSize(this.value)" style="margin-left:12px;font-size:12px;padding:2px 6px;border:1px solid var(--border);border-radius:4px;background:var(--bg-card)">
+      ${[10, 20, 50, 100].map(n => `<option value="${n}" ${n === _taskPg.pageSize ? 'selected' : ''}>${n}/页</option>`).join('')}
+    </select>`;
+}
+
+window.taskPgGo = function(p) { _taskPg.page = Math.max(0, p); loadTasks(); };
+window.taskPgSize = function(v) {
+  _taskPg.pageSize = parseInt(v) || 20;
+  _taskPg.page = 0;
+  localStorage.setItem('task-page-size', String(_taskPg.pageSize));
+  loadTasks();
+};
+
+function _updateTopStats(stats) {
+  const el = document.getElementById('topbar-task-stats');
+  const txt = document.getElementById('topbar-task-text');
+  if (!el || !stats || !stats.total) { if (el) el.style.display = 'none'; return; }
+  const by = stats.by_status || {};
+  const tasks = window._cachedTasks || [];
+  // 累计 待生成图片数 = sum(max(target - generated, 0)) of running/pending/paused
+  let pendingImages = 0;
+  let totalMod = 0;
+  for (const t of tasks) {
+    if (['running', 'pending', 'paused'].includes(t.status)) {
+      pendingImages += Math.max((t.target_count || 0) - (t.generated_count || 0) - (t.moderated_count || 0), 0);
+    }
+    totalMod += (t.moderated_count || 0);
+  }
+  const parts = [];
+  if (by.running)   parts.push(`▶ ${by.running}`);
+  if (by.pending)   parts.push(`⌛ ${by.pending}`);
+  if (by.paused)    parts.push(`⏸ ${by.paused}`);
+  if (pendingImages > 0) parts.push(`<span title="待生成图片总数（剩余目标 - 已被审）" style="color:#1d4ed8">📷 ${pendingImages} 待生</span>`);
+  if (by.failed)    parts.push(`❌ ${by.failed}`);
+  if (totalMod > 0) parts.push(`<span style="color:#fca5a5">⚠ ${totalMod} 审</span>`);
+  if (by.done)      parts.push(`<span style="color:#86efac">✓ ${by.done}</span>`);
+  if (parts.length === 0) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  txt.innerHTML = parts.join('  ');
+}
+
+// 周期刷新顶部状态（每 5s）
+setInterval(async () => {
+  try {
+    const d = await api('GET', '/v1/images/tasks');
+    window._cachedTasks = d.tasks || [];
+    _updateTopStats(d.stats || {});
+  } catch {}
+}, 5000);
+
+window.taskCopyPrompt = function(btn) {
+  const card = btn.closest('.task-card');
+  const promptEl = card.querySelector('.task-prompt-text');
+  if (!promptEl) return;
+  const text = promptEl.textContent || '';
+  navigator.clipboard.writeText(text).then(() => {
+    const old = btn.textContent;
+    btn.textContent = '✓ 已复制';
+    setTimeout(() => { btn.textContent = old; }, 1500);
+    toast('已复制到剪贴板', 'success');
+  }).catch(() => toast('复制失败', 'error'));
 };
 
 window.taskPause  = async id => { try { await api('POST', `/v1/images/tasks/${id}/pause`);  toast('已暂停'); loadTasks(); } catch(e) { toast(e.message,'error'); } };
 window.taskResume = async id => { try { await api('POST', `/v1/images/tasks/${id}/resume`); toast('已恢复'); loadTasks(); } catch(e) { toast(e.message,'error'); } };
+window.taskRetry  = async id => { try { await api('POST', `/v1/images/tasks/${id}/retry`);  toast('已重新入队'); loadTasks(); } catch(e) { toast(e.message,'error'); } };
+window.taskBestEffort = async id => { try { await api('POST', `/v1/images/tasks/${id}/best-effort`); toast('已开启尽力模式'); loadTasks(); } catch(e) { toast(e.message,'error'); } };
+window.taskClose  = async id => { try { await api('POST', `/v1/images/tasks/${id}/close`); toast('任务已关闭（标为完成）'); loadTasks(); } catch(e) { toast(e.message,'error'); } };
 window.taskDelete = async id => { try { await api('DELETE', `/v1/images/tasks/${id}`);       toast('已删除'); loadTasks(); } catch(e) { toast(e.message,'error'); } };
 window.taskMove   = async (id, dir) => { try { await api('POST', `/v1/images/tasks/${id}/move?direction=${dir}`); loadTasks(); } catch(e) { toast(e.message,'error'); } };
-window.viewTaskSession = (sid, prompt) => { switchView('sessions'); S.gallerySession = sid; loadSessions(); loadGallery(false); };
+window.viewTaskSession = (sid) => { switchView('sessions'); S.gallerySession = sid; loadSessions(); loadGallery(false); };
+
+window.taskBulkPause = async () => {
+  try {
+    const r = await api('POST', '/v1/images/tasks/bulk/pause');
+    toast(`已暂停 ${r.paused} 个任务`, 'success');
+    loadTasks();
+  } catch(e) { toast('批量暂停失败: ' + e.message, 'error'); }
+};
+window.taskBulkResume = async () => {
+  try {
+    const r = await api('POST', '/v1/images/tasks/bulk/resume');
+    toast(`已恢复 ${r.resumed} 个任务`, 'success');
+    loadTasks();
+  } catch(e) { toast('批量恢复失败: ' + e.message, 'error'); }
+};
+window.taskRetryAllFailed = async () => {
+  try {
+    const r = await api('POST', '/v1/images/tasks/bulk/retry-failed');
+    if (r.retried > 0) toast(`已重试 ${r.retried} 个失败任务`, 'success');
+    else toast('当前没有 failed 状态的任务', '');
+    loadTasks();
+  } catch(e) { toast('批量重试失败: ' + e.message, 'error'); }
+};
+window.taskBulkBestEffort = async () => {
+  try {
+    const r = await api('POST', '/v1/images/tasks/bulk/best-effort');
+    if (r.enabled > 0) toast(`已对 ${r.enabled} 个任务启用尽力模式`, 'success');
+    else toast('没有满足条件的任务（需 failed + 部分成功）', '');
+    loadTasks();
+  } catch(e) { toast('批量尽力失败: ' + e.message, 'error'); }
+};
 window.goToTasks = () => switchView('generate') || setSubTab('tasks');
 
 let taskPollTimer = null;
@@ -1972,7 +2774,7 @@ window.saveConfig = async function() {
   if (cookie)        fd.append('grok_cookie', cookie);
   if (ua)            fd.append('grok_user_agent', ua);
   if (browser)       fd.append('grok_browser', browser);
-  if (proxy)         fd.append('grok_proxy', proxy);
+  fd.append('grok_proxy', proxy);          // 空值也发，允许清空
   if (flaresolverr)  fd.append('flaresolverr_url', flaresolverr);
   if (retention)     fd.append('log_retention_days', retention);
   try {
@@ -1993,14 +2795,43 @@ window.refreshQuota = async function() {
   const label = document.getElementById('quota-label');
   label.textContent = '查询中…';
   try {
-    const d = await api('GET', '/v1/quota');
+    const [d, c] = await Promise.all([
+      api('GET', '/v1/quota'),
+      api('GET', '/v1/quota/chat').catch(() => ({chat_quotas: []})),
+    ]);
     const auto = d.quotas?.auto;
+    const chatQ = (c.chat_quotas || []).filter(x => !x.error);
     if (auto) {
+      // 工具栏只显示 imagine quota；chat quota 通过点击拟态框查看
       label.textContent = `${auto.remaining}/${auto.total}`;
       dot.className = 'dot' + (auto.used_pct >= 90 ? ' bad' : auto.used_pct >= 70 ? ' warn' : '');
       if (d.image_blocked) toast('⚠ 额度已达90%，生图受限', 'error');
     } else label.textContent = '额度';
+    // 额度详情拟态框（点击 chip 时打开）
+    window._quotaSnapshot = { quotas: d.quotas, chat: chatQ, image_blocked: d.image_blocked };
   } catch { label.textContent = '额度'; _quotaCooldownEnd = 0; }
+};
+
+window.showQuotaDetails = function() {
+  const s = window._quotaSnapshot;
+  if (!s) { refreshQuota(); return; }
+  const rows = [];
+  rows.push(`<div class="modal-section-title">Imagine 额度（图片/视频）</div>`);
+  for (const [mode, q] of Object.entries(s.quotas || {})) {
+    if (!q) continue;
+    const cls = q.used_pct >= 90 ? 'error' : q.used_pct >= 70 ? 'running' : 'success';
+    rows.push(_row(mode, `${q.remaining}/${q.total} 剩余（${q.used_pct}%）`, cls));
+  }
+  rows.push(`<div class="modal-section-title">Chat 模型额度（每 2 小时窗口）</div>`);
+  if (!s.chat?.length) {
+    rows.push(`<div class="modal-row"><span class="k">无可查询的 chat 模型</span><span class="v"></span></div>`);
+  } else {
+    for (const q of s.chat) {
+      const cls = q.used_pct >= 90 ? 'error' : q.used_pct >= 70 ? 'running' : 'success';
+      rows.push(_row(q.label, `${q.remaining}/${q.total} 剩余（${q.used_pct}%）`, cls));
+    }
+  }
+  openGenericModal('额度详情', rows.join(''));
 };
 
 // ── Dashboard (Home) ──────────────────────────────────────────
@@ -2226,12 +3057,12 @@ let _chatModelsLoaded = false;
 
 let _chatModel = '';
 
-function toggleChatModelMenu(e) {
+window.toggleChatModelMenu = function(e) {
   e.stopPropagation();
   document.getElementById('chat-model-wrap').classList.toggle('open');
-}
+};
 
-function selectChatModel(id) {
+window.selectChatModel = function(id) {
   _chatModel = id;
   document.getElementById('chat-model-label').textContent = id;
   document.getElementById('chat-model-wrap').classList.remove('open');
@@ -2438,7 +3269,50 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ── Files ───────────────────────────────────────────────────────
-const _filesState = { assets: [], nextPageToken: '', loading: false, firstLoaded: false };
+const _filesState = {
+  assets: [],
+  page: 0,                  // DB 分页 cursor
+  pageSize: 60,
+  loading: false,
+  firstLoaded: false,
+  exhaustedDb: false,       // DB 是否已读完
+  cloudNextPageToken: '',   // DB 读完后才用 Grok API token 继续
+  cloudExhausted: false,
+  seenIds: new Set(),       // 已渲染的 assetId，避免重复
+};
+// 本地已下载文件的 assetId set，key = assetId（不含扩展名）
+let _localFilesSet = new Set();
+
+async function _refreshLocalFilesSet() {
+  try {
+    const d = await api('GET', '/v1/grok-files/');
+    _localFilesSet = new Set(
+      (d.files || []).map(f => f.replace(/\.[^.]+$/, ''))  // 去掉扩展名得到 assetId
+    );
+  } catch { /* 忽略，降级为空 set */ }
+}
+
+function _applyLocalStatus(card, asset) {
+  const assetId = card.dataset.id;
+  if (!assetId) return;
+  // 永久不可用（DB 层标记）
+  if (asset && asset._unavailable) {
+    card.classList.add('unavailable');
+    card.title = asset._unavailable_reason || '资源不可用';
+    return;
+  }
+  // 云端已删除（仍保留卡片，加标识）
+  if (asset && asset._cloud_deleted) {
+    card.classList.add('cloud-deleted-mark');
+  }
+  // 已本地下载（即使云端已删，本地仍可预览/下载）
+  if (_localFilesSet.has(assetId)) {
+    const localFn = card.dataset.name;
+    card.dataset.thumbUrl = `/v1/grok-files/${encodeURIComponent(localFn)}`;
+    card.classList.add('downloaded');
+    _loadCardThumb(card, card.dataset.thumbUrl);
+  }
+}
 
 function _fmtBytes(b) {
   if (b == null) return '';
@@ -2448,66 +3322,364 @@ function _fmtBytes(b) {
 }
 
 function _thumbUrl(asset) {
-  // 只用服务端返回的 previewImageKey；不主动拉原图当缩略图
-  // （拉原图等同于下载整份资源，对图片/视频代价都太高）
-  const k = asset.previewImageKey;
+  // previewImageKey 优先；图片类型无 preview 时回退到原文件 key
+  const k = asset.previewImageKey || (asset.mimeType?.startsWith('image/') ? asset.key : '');
   if (!k) return '';
   return `/v1/grok/assets/download?key=${encodeURIComponent(k)}&filename=thumb`;
+}
+
+async function _loadCardThumb(card, url) {
+  if (!url || card.classList.contains('loaded') || card.dataset.thumbLoading) return;
+  card.dataset.thumbLoading = '1';
+  const fn = card.dataset.name || '';
+  const isVideo = /\.(mp4|webm|mov)$/i.test(fn);
+  const isLocal = url.startsWith('/v1/grok-files/');
+  // 视频（本地 grok-files，无需认证）：<video> 标签，浏览器自动显示首帧
+  if (isVideo && isLocal) {
+    const existing = card.querySelector('.file-thumb-video');
+    if (existing) existing.remove();
+    const v = document.createElement('video');
+    v.className = 'file-thumb-video';
+    v.muted = true; v.preload = 'metadata'; v.playsInline = true;
+    v.src = url + '#t=0.1';
+    v.onloadedmetadata = () => { card.classList.add('loaded'); };
+    const img = card.querySelector('.file-thumb-img');
+    if (img) img.style.display = 'none';
+    card.insertBefore(v, card.firstChild);
+    delete card.dataset.thumbLoading;
+    return;
+  }
+  // 远程缩略图（/v1/grok/assets/download...）：直接 <img src>，
+  // 加 ?inline=1&api_key= 让浏览器渐进式加载 + HTTP cache 复用，不再 fetch+blob
+  let finalUrl = url;
+  if (!isLocal && url.startsWith('/v1/grok/assets/download')) {
+    const sep = url.includes('?') ? '&' : '?';
+    finalUrl = url + sep + 'inline=1&api_key=' + encodeURIComponent(getKey());
+  }
+  const img = card.querySelector('.file-thumb-img');
+  if (img) {
+    img.onload = () => { card.classList.add('loaded'); };
+    img.onerror = () => { /* 保持占位图标 */ };
+    img.src = finalUrl;
+  }
+  delete card.dataset.thumbLoading;
 }
 
 function _fileTypeLabel(mimeType) {
   if (!mimeType) return '';
   if (mimeType.startsWith('video/')) return 'VIDEO';
-  if (mimeType.startsWith('image/')) return 'IMG';
-  return mimeType.split('/')[1]?.toUpperCase() || 'FILE';
+  if (mimeType === 'application/pdf') return 'PDF';
+  if (mimeType.startsWith('audio/')) return 'AUDIO';
+  if (!mimeType.startsWith('image/')) return mimeType.split('/')[1]?.toUpperCase().slice(0, 6) || 'FILE';
+  return '';
+}
+
+function _fileIcon(mimeType) {
+  if (!mimeType) return '📄';
+  if (mimeType.startsWith('image/')) return '🖼';
+  if (mimeType.startsWith('video/')) return '🎬';
+  if (mimeType.startsWith('audio/')) return '🎵';
+  if (mimeType === 'application/pdf') return '📕';
+  return '📄';
+}
+
+function _assetFilename(asset) {
+  // Use assetId as unique base; derive extension from mimeType
+  const extMap = {
+    'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp',
+    'image/gif': '.gif', 'video/mp4': '.mp4', 'video/webm': '.webm',
+    'application/pdf': '.pdf', 'audio/mpeg': '.mp3', 'audio/ogg': '.ogg',
+  };
+  const ext = extMap[asset.mimeType] || (asset.mimeType ? '.' + asset.mimeType.split('/')[1] : '');
+  return (asset.assetId || 'file') + ext;
 }
 
 function _renderFileCard(asset) {
   const thumb = _thumbUrl(asset);
   const typeLabel = _fileTypeLabel(asset.mimeType);
-  const date = asset.createTime ? new Date(asset.createTime).toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
-  const size = _fmtBytes(asset.sizeBytes);
-  const isImg = asset.mimeType?.startsWith('image/');
-
-  // 瀑布流：用 asset.width/height（API 返回）做缩略图高度，没有就 1:1
-  let thumbStyle = '';
-  let thumbCls = 'file-thumb';
-  if (asset.width && asset.height && asset.width > 0) {
-    const ratio = asset.height / asset.width;
-    // 限制 0.5–2.0 范围，避免极端
-    const clamped = Math.max(0.5, Math.min(2.0, ratio));
-    thumbStyle = `style="aspect-ratio:${asset.width}/${asset.height}"`;
-  } else {
-    thumbCls += ' no-aspect';
-  }
+  const icon = _fileIcon(asset.mimeType);
 
   const card = document.createElement('div');
   card.className = 'file-card';
   card.dataset.id = asset.assetId;
-  card.dataset.key = asset.key;
-  card.dataset.name = asset.name;
+  card.dataset.key = asset.key || '';
+  card.dataset.name = _assetFilename(asset);
+  card.dataset.size = asset.sizeBytes || 0;
+  card.dataset.thumbUrl = thumb;
   card.innerHTML = `
-    <div class="${thumbCls}" ${thumbStyle}>
-      ${thumb ? `<img src="${thumb}" loading="lazy" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
-        <div class="file-thumb-icon" style="display:none">${isImg ? '🖼' : '🎬'}</div>` :
-        `<div class="file-thumb-icon">${isImg ? '🖼' : '🎬'}</div>`}
-      <div class="file-check">
-        <svg class="file-check-tick" viewBox="0 0 10 10" fill="none">
-          <path d="M2 5l2.5 2.5 3.5-4" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </div>
-      ${typeLabel ? `<span class="file-type-badge">${typeLabel}</span>` : ''}
+    <img class="file-thumb-img" alt="">
+    <div class="file-thumb-icon">${icon}</div>
+    <div class="file-check" onclick="event.stopPropagation();filesToggleSelect(this.parentElement)">
+      <svg class="file-check-tick" viewBox="0 0 10 10" fill="none">
+        <path d="M2 5l2.5 2.5 3.5-4" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
     </div>
-    <div class="file-meta">
-      <div class="file-name" title="${esc(asset.name)}">${esc(asset.name)}</div>
-      <div class="file-info">${size}${date ? ' · ' + date : ''}</div>
+    ${typeLabel ? `<span class="file-type-badge">${typeLabel}</span>` : ''}
+    <button class="file-quick-dl" title="下载到本机" onclick="event.stopPropagation();filesQuickDownload(this)">⬇</button>
+    <button class="file-quick-del" title="删除云端文件" onclick="event.stopPropagation();filesQuickDelete(this)">🗑</button>
+    <div class="file-dl-overlay">
+      <svg class="file-dl-svg" viewBox="0 0 40 40">
+        <circle class="file-dl-track" cx="20" cy="20" r="16" fill="none" stroke-width="3"/>
+        <circle class="file-dl-prog"  cx="20" cy="20" r="16" fill="none" stroke-width="3"/>
+      </svg>
+      <span class="file-dl-icon ok">✓</span>
+      <span class="file-dl-icon skip" style="font-size:11px">已存在</span>
+      <span class="file-dl-icon queued" style="font-size:14px">⏳</span>
+      <span class="file-dl-icon err">✕</span>
     </div>`;
   card.addEventListener('click', () => {
+    if (card.classList.contains('unavailable')) return;
+    if (card.classList.contains('downloaded')) {
+      filesPreviewOpen(card);
+      return;
+    }
     card.classList.toggle('selected');
     _updateFilesSelCount();
   });
   return card;
 }
+
+// ── Preview modal for downloaded images/videos ──
+let _previewIndex = -1;
+let _slideTimer = null;
+let _slidePlaying = false;
+
+// 预览数据源：'files'（默认） 或 'gallery'
+let _previewSource = 'files';
+let _galleryPreviewItems = [];  // gallery 模式下：从后端拉的全量项数组
+
+function _previewableCards() {
+  // gallery 模式 → 用全量数组（每项是后端返回的 item 对象）
+  // files 模式 → DOM 卡片
+  let all;
+  if (_previewSource === 'gallery') {
+    all = _galleryPreviewItems;
+  } else {
+    all = [...document.querySelectorAll('#files-grid .file-card.downloaded')];
+  }
+  const skipVideo = document.getElementById('slide-skip-video');
+  const isVideo = (x) => {
+    if (_previewSource === 'gallery') return x.file_type === 'video' || /\.(mp4|webm|mov)$/i.test(x.filename || '');
+    return /\.(mp4|webm|mov)$/i.test(x.dataset.name || '');
+  };
+  if (_slidePlaying && skipVideo?.checked) {
+    return all.filter(x => !isVideo(x));
+  }
+  return all;
+}
+
+// 从一项提取 {url, filename, sizeBytes, isVideo}（兼容 Files 卡片 / Gallery 对象）
+function _previewItemFromCard(card) {
+  if (_previewSource === 'gallery') {
+    // card 是后端返回的 item 对象
+    const fn = card.filename;
+    const sid = card.session_id;
+    if (!fn || !sid) return null;
+    return {
+      url: card.url || `/v1/files/image/${encodeURIComponent(sid)}/${encodeURIComponent(fn)}`,
+      filename: fn,
+      sizeBytes: card.size_bytes || 0,
+      isVideo: card.file_type === 'video' || /\.(mp4|webm|mov)$/i.test(fn),
+    };
+  }
+  // files 源
+  const fn = card.dataset.name;
+  if (!fn) return null;
+  return {
+    url: `/v1/grok-files/${encodeURIComponent(fn)}`,
+    filename: fn,
+    sizeBytes: parseInt(card.dataset.size) || 0,
+    isVideo: /\.(mp4|webm|mov)$/i.test(fn),
+  };
+}
+
+window.filesSlidePersist = function() {
+  const interval = document.getElementById('slide-interval')?.value || 3;
+  const skip = document.getElementById('slide-skip-video')?.checked ? 1 : 0;
+  localStorage.setItem('files-slide-interval', interval);
+  localStorage.setItem('files-slide-skip-video', String(skip));
+  // 调整间隔实时生效
+  if (_slidePlaying) { _stopSlideTimer(); _startSlideTimer(); }
+};
+
+function _startSlideTimer() {
+  const sec = parseFloat(document.getElementById('slide-interval')?.value) || 3;
+  _slideTimer = setInterval(() => {
+    const all = _previewableCards();
+    if (_previewIndex >= all.length - 1) {
+      _previewIndex = 0;  // 循环
+    } else {
+      _previewIndex += 1;
+    }
+    _renderPreview();
+  }, Math.max(1000, sec * 1000));
+}
+function _stopSlideTimer() {
+  if (_slideTimer) { clearInterval(_slideTimer); _slideTimer = null; }
+}
+
+window.filesSlideToggle = function() {
+  _slidePlaying = !_slidePlaying;
+  const btn = document.getElementById('slide-toggle');
+  if (_slidePlaying) {
+    btn.textContent = '⏸ 暂停'; btn.classList.add('active');
+    // 切到播放后重新对齐索引到当前可播放卡片集合
+    const cur = _previewableCards();
+    if (cur.length === 0) { _slidePlaying = false; btn.textContent = '▶ 播放'; btn.classList.remove('active'); toast('当前无可播放图片', 'error'); return; }
+    if (_previewIndex >= cur.length) _previewIndex = 0;
+    _startSlideTimer();
+  } else {
+    btn.textContent = '▶ 播放'; btn.classList.remove('active');
+    _stopSlideTimer();
+  }
+};
+
+window.filesPreviewOpen = function(card, source) {
+  // source 可选: 'files' (默认) / 'gallery'
+  _previewSource = source || 'files';
+  const all = _previewableCards();
+  _previewIndex = all.indexOf(card);
+  if (_previewIndex < 0) return;
+  _renderPreview();
+  document.getElementById('files-preview').classList.add('open');
+};
+// 图库预览：先拉全量项数组，再定位起始索引
+window.galleryPreviewOpen = async function(clickedTileEl) {
+  const sid = clickedTileEl.dataset.session;
+  const fn = clickedTileEl.dataset.filename;
+  // 全量拉取（使用当前 session 过滤；gallerySession=null 表示全部）
+  toast('准备预览…', '');
+  try {
+    const params = new URLSearchParams({ offset: 0, limit: 9999 });
+    if (S.gallerySession) params.set('session_id', S.gallerySession);
+    const d = await api('GET', '/v1/images/gallery?' + params);
+    _galleryPreviewItems = d.data || [];
+  } catch(e) {
+    toast('加载预览列表失败: ' + e.message, 'error');
+    return;
+  }
+  if (!_galleryPreviewItems.length) return;
+  _previewSource = 'gallery';
+  // 定位被点击项在全量数组中的下标
+  _previewIndex = _galleryPreviewItems.findIndex(it => it.session_id === sid && it.filename === fn);
+  if (_previewIndex < 0) _previewIndex = 0;
+  _renderPreview();
+  document.getElementById('files-preview').classList.add('open');
+};
+
+function _renderPreview() {
+  const all = _previewableCards();
+  if (_previewIndex < 0 || _previewIndex >= all.length) return;
+  const card = all[_previewIndex];
+  const item = _previewItemFromCard(card);
+  if (!item) return;
+  const content = document.getElementById('files-preview-content');
+  content.innerHTML = item.isVideo
+    ? `<video src="${item.url}" controls autoplay loop playsinline></video>`
+    : `<img src="${item.url}" alt="">`;
+  const info = document.getElementById('files-preview-info');
+  info.textContent = item.filename + (item.sizeBytes ? ` · ${(item.sizeBytes/1024/1024).toFixed(2)} MB` : '');
+  document.getElementById('files-preview-counter').textContent = `${_previewIndex + 1} / ${all.length}`;
+  document.querySelector('#files-preview .files-preview-nav.prev').toggleAttribute('disabled', _previewIndex === 0);
+  document.querySelector('#files-preview .files-preview-nav.next').toggleAttribute('disabled', _previewIndex === all.length - 1);
+}
+
+window.filesPreviewNav = function(delta) {
+  const all = _previewableCards();
+  const next = _previewIndex + delta;
+  if (next < 0 || next >= all.length) return;
+  _previewIndex = next;
+  _renderPreview();
+  // 幻灯片中手动切换 → 重置计时，避免刚切就跳
+  if (_slidePlaying) { _stopSlideTimer(); _startSlideTimer(); }
+};
+
+window.filesPreviewClose = function(e) {
+  if (e && (e.target.tagName === 'IMG' || e.target.tagName === 'VIDEO')) return;  // 点媒体不关
+  // 关闭时停止幻灯片
+  _stopSlideTimer();
+  _slidePlaying = false;
+  const btn = document.getElementById('slide-toggle');
+  if (btn) { btn.textContent = '▶ 播放'; btn.classList.remove('active'); }
+  const m = document.getElementById('files-preview');
+  m.classList.remove('open');
+  document.getElementById('files-preview-content').innerHTML = '';  // 释放视频资源
+  _previewIndex = -1;
+};
+
+document.addEventListener('keydown', (e) => {
+  const m = document.getElementById('files-preview');
+  if (!m || !m.classList.contains('open')) return;
+  if (e.key === 'Escape') filesPreviewClose();
+  else if (e.key === 'ArrowLeft') filesPreviewNav(-1);
+  else if (e.key === 'ArrowRight') filesPreviewNav(1);
+});
+
+// ── 立即同步：让后端把 DB 中所有未下载资产入下载队列 ──
+window.filesSyncNow = async function() {
+  const btn = document.getElementById('files-sync-now-btn');
+  btn.disabled = true; btn.textContent = '入队中…';
+  try {
+    const r = await api('POST', '/v1/grok-files/sync-now');
+    if (r.queued > 0) {
+      toast(`已入队 ${r.queued} 个未下载文件（共扫描 ${r.scanned_assets} 个）`, 'success');
+    } else {
+      toast(r.message || '本地 DB 无未下载资产；已唤醒后台扫描', '');
+    }
+    _refreshSyncStatusUI();
+  } catch(e) {
+    toast('立即同步失败: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '立即同步';
+  }
+};
+
+// ── 全量同步：触发后端拉取所有 Grok 页面入库 ──
+window.filesFullSync = async function() {
+  const btn = document.getElementById('files-full-sync-btn');
+  btn.disabled = true; btn.textContent = '同步中…';
+  try {
+    await api('POST', '/v1/grok-files/sync');
+  } catch(e) {
+    if (!String(e.message).includes('409')) {
+      btn.disabled = false; btn.textContent = '全量同步';
+      toast('启动失败: ' + e.message, 'error'); return;
+    }
+  }
+  // 轮询状态
+  const poll = setInterval(async () => {
+    try {
+      const s = await api('GET', '/v1/grok-files/sync/status');
+      btn.textContent = `同步中 ${s.progress} 页 (+${s.new_count})`;
+      if (!s.running) {
+        clearInterval(poll);
+        btn.disabled = false; btn.textContent = '全量同步';
+        if (s.error) {
+          toast('同步失败: ' + s.error, 'error');
+        } else {
+          const corrected = (s.revived_count || 0) + (s.stale_deleted_count || 0);
+          let msg = `全量同步完成：${s.total_pages} 页，新增 ${s.new_count} 个，更新 ${s.updated_count} 个`;
+          if (corrected > 0) {
+            msg += `；纠正误标"已删除" ${corrected} 个`;
+          }
+          toast(msg, 'success');
+          loadFiles(true);
+        }
+      }
+    } catch { /* ignore */ }
+  }, 2000);
+};
+
+// Lazy thumbnail loader — triggers when card enters viewport
+const _thumbObserver = new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    if (e.isIntersecting) {
+      const card = e.target;
+      _thumbObserver.unobserve(card);
+      _loadCardThumb(card, card.dataset.thumbUrl);
+    }
+  }
+}, { rootMargin: '200px 0px' });
 
 // 无限滚动哨兵
 let _filesObserver = null;
@@ -2517,7 +3689,8 @@ function _setupFilesInfiniteScroll() {
   if (!sentinel) return;
   _filesObserver = new IntersectionObserver(entries => {
     for (const e of entries) {
-      if (e.isIntersecting && _filesState.nextPageToken && !_filesState.loading) {
+      const hasMore = !_filesState.exhaustedDb || !_filesState.cloudExhausted;
+      if (e.isIntersecting && hasMore && !_filesState.loading) {
         loadFiles(false);
       }
     }
@@ -2538,35 +3711,58 @@ window.loadFiles = async function(reset = false) {
   if (_filesState.loading) return;
   if (reset) {
     _filesState.assets = [];
-    _filesState.nextPageToken = '';
+    _filesState.page = 0;
     _filesState.firstLoaded = false;
+    _filesState.exhaustedDb = false;
+    _filesState.cloudNextPageToken = '';
+    _filesState.cloudExhausted = false;
+    _filesState.seenIds = new Set();
     document.getElementById('files-grid').innerHTML = '';
   }
-  // 首次进入页面（assets 空）或显式 reset 时也要拉
-  if (!reset && _filesState.firstLoaded && !_filesState.nextPageToken) return;
+  if (!reset && _filesState.firstLoaded && _filesState.exhaustedDb && _filesState.cloudExhausted) return;
   _filesState.loading = true;
+  if (!_filesState.firstLoaded) await _refreshLocalFilesSet();
   const moreText = document.getElementById('files-load-more-text');
   if (moreText) moreText.textContent = '加载中…';
   try {
-    const pt = _filesState.nextPageToken;
-    const url = '/v1/grok/assets?page_size=50' + (pt ? '&page_token=' + encodeURIComponent(pt) : '');
-    const d = await api('GET', url);
-    const assets = d.assets || [];
-    _filesState.nextPageToken = d.nextPageToken || '';
+    let appended = 0;
+    // 阶段 1：DB 优先（瞬时返回缓存数据）
+    if (!_filesState.exhaustedDb) {
+      const d = await api('GET', `/v1/grok-files/assets?page=${_filesState.page}&page_size=${_filesState.pageSize}`);
+      const raw = d.assets || [];
+      appended = _appendCards(raw);
+      _filesState.page += 1;
+      if (!d.has_more) _filesState.exhaustedDb = true;
+    }
+    // 阶段 2：DB 读完后才打 Grok API 拉云端增量
+    // 由于 DB 已 upsert 所有 Grok 资产，云端拉回多半是已见过的，循环跳过空批次直到真到底
+    if (_filesState.exhaustedDb && !_filesState.cloudExhausted && appended === 0) {
+      let cloudPagesScanned = 0;
+      while (cloudPagesScanned < 5 && !_filesState.cloudExhausted && appended === 0) {
+        const pt = _filesState.cloudNextPageToken;
+        const url = '/v1/grok/assets?page_size=50' + (pt ? '&page_token=' + encodeURIComponent(pt) : '');
+        const d = await api('GET', url);
+        const raw = d.assets || [];
+        appended = _appendCards(raw);
+        _filesState.cloudNextPageToken = d.nextPageToken || '';
+        if (!_filesState.cloudNextPageToken) _filesState.cloudExhausted = true;
+        cloudPagesScanned++;
+      }
+    }
     _filesState.firstLoaded = true;
-    const grid = document.getElementById('files-grid');
-    assets.forEach(a => {
-      _filesState.assets.push(a);
-      grid.appendChild(_renderFileCard(a));
-    });
     document.getElementById('files-empty').style.display = _filesState.assets.length === 0 ? '' : 'none';
     if (moreText) {
-      moreText.textContent = _filesState.nextPageToken
-        ? '滚动加载更多…'
-        : (_filesState.assets.length ? '— 已到末尾 —' : '');
+      const more = !_filesState.exhaustedDb || !_filesState.cloudExhausted;
+      moreText.textContent = more ? '滚动加载更多…' : (_filesState.assets.length ? '— 已到末尾 —' : '');
     }
     _updateFilesSelCount();
     _setupFilesInfiniteScroll();
+    // 首次进入页面：立即探测一次新增 + 启动周期探测 + 恢复进行中的删除/下载状态
+    if (reset || (!reset && _filesState.assets.length <= _filesState.pageSize)) {
+      _bgProbeNewAssets();
+      _startBgProbe();
+      _restoreInflightDeletes();
+    }
   } catch(e) {
     if (moreText) moreText.textContent = '加载失败：' + e.message;
     toast('加载失败: ' + e.message, 'error');
@@ -2575,63 +3771,569 @@ window.loadFiles = async function(reset = false) {
   }
 };
 
+function _appendCards(raw) {
+  const grid = document.getElementById('files-grid');
+  const frag = document.createDocumentFragment();
+  let n = 0;
+  raw.forEach(a => {
+    const aid = a.assetId;
+    if (!aid || _filesState.seenIds.has(aid)) return;
+    _filesState.seenIds.add(aid);
+    _filesState.assets.push(a);
+    const card = _renderFileCard(a);
+    _applyLocalStatus(card, a);
+    frag.appendChild(card);
+    n++;
+  });
+  grid.appendChild(frag);
+  return n;
+}
+
+// 后台周期性探测云端新增（不阻塞 UI；500+ 后也持续工作 = 线上+本地聚合）
+let _bgProbeTimer = null;
+const _BG_PROBE_INTERVAL_MS = 30 * 1000;  // 30 秒
+
+async function _bgProbeNewAssets() {
+  try {
+    const d = await api('GET', '/v1/grok/assets?page_size=50');
+    const raw = d.assets || [];
+    const newOnes = raw.filter(a => a.assetId && !_filesState.seenIds.has(a.assetId));
+    if (!newOnes.length) return;
+    const grid = document.getElementById('files-grid');
+    const frag = document.createDocumentFragment();
+    // 倒序 prepend，使最新的最先到达顶部
+    newOnes.forEach(a => {
+      _filesState.seenIds.add(a.assetId);
+      _filesState.assets.unshift(a);
+      const card = _renderFileCard(a);
+      _applyLocalStatus(card, a);
+      frag.appendChild(card);
+    });
+    grid.insertBefore(frag, grid.firstChild);
+    if (newOnes.length > 0) {
+      toast(`发现 ${newOnes.length} 个新文件（已置顶）`, '');
+    }
+  } catch { /* 忽略 */ }
+}
+
+function _startBgProbe() {
+  if (_bgProbeTimer) clearInterval(_bgProbeTimer);
+  _bgProbeTimer = setInterval(() => {
+    if (S.view === 'files' && !document.hidden) _bgProbeNewAssets();
+  }, _BG_PROBE_INTERVAL_MS);
+}
+function _stopBgProbe() {
+  if (_bgProbeTimer) { clearInterval(_bgProbeTimer); _bgProbeTimer = null; }
+}
+
 window.filesLoadMore = function() { loadFiles(false); };
 
 window.filesToggleAll = function(checked) {
   document.querySelectorAll('#files-grid .file-card').forEach(c => {
-    c.classList.toggle('selected', checked);
+    if (c.classList.contains('unavailable')) return;  // 不可用资产仍跳过
+    c.classList.toggle('selected', checked);          // 已下载的也参与全选（供批量删除）
   });
   _updateFilesSelCount();
 };
 
+// 卡片 id → download job id 的映射，用于轮询更新状态
+const _dlJobMap = {};  // jobId → card
+
 window.filesSaveLocal = async function() {
-  const cards = [...document.querySelectorAll('#files-grid .file-card.selected')];
-  if (!cards.length) { toast('请先选择文件', 'error'); return; }
-  const files = cards.map(c => ({ key: c.dataset.key, filename: c.dataset.name }));
+  // 已下载的卡片即使被选中也跳过，避免重复下载
+  const cards = [...document.querySelectorAll('#files-grid .file-card.selected')]
+    .filter(c => !c.classList.contains('downloaded'));
+  if (!cards.length) { toast('请先选择未下载的文件', 'error'); return; }
+
   const btn = document.getElementById('files-save-btn');
-  btn.disabled = true; btn.textContent = `保存中 0/${files.length}…`;
+  const cancelBtn = document.getElementById('files-cancel-btn');
+  btn.disabled = true;
+  cancelBtn.style.display = '';
+  btn.textContent = '提交中…';
+
+  // 提交到后台队列
+  const items = cards.map(c => ({
+    asset_key: c.dataset.key,
+    filename: c.dataset.name,
+    size_bytes: parseInt(c.dataset.size) || 0,
+  }));
+  let jobIds;
   try {
-    const d = await api('POST', '/v1/grok/assets/save-local', { files });
-    const saved = d.saved?.length || 0;
-    const errors = d.errors?.length || 0;
-    if (errors > 0) {
-      toast(`已保存 ${saved} 个，${errors} 个失败`, saved > 0 ? '' : 'error');
-    } else {
-      toast(`已保存 ${saved} 个文件到 data/grok-files/`, 'success');
-    }
+    const d = await api('POST', '/v1/grok-files/downloads', items);
+    jobIds = d.ids || [];
   } catch(e) {
-    toast('保存失败: ' + e.message, 'error');
-  } finally {
-    btn.disabled = false; btn.textContent = '保存到本地';
+    toast('提交下载队列失败: ' + e.message, 'error');
+    btn.disabled = false; btn.textContent = '保存到本地'; cancelBtn.style.display = 'none';
+    return;
+  }
+
+  // 建立 jobId → card 映射；初始全部标记为 queued（等待状态），轮询时根据后端状态切换
+  jobIds.forEach((id, i) => {
+    if (cards[i]) {
+      cards[i].classList.remove('saved', 'save-skipped', 'save-error', 'downloading');
+      cards[i].classList.add('queued');
+      _dlJobMap[id] = cards[i];
+    }
+  });
+
+  btn.textContent = `后台下载中 0/${jobIds.length}…`;
+  toast(`已提交 ${jobIds.length} 个文件到后台下载队列`, 'success');
+  btn.disabled = false;
+  cancelBtn.style.display = 'none';
+
+  // 开始轮询
+  _pollDownloadJobs(jobIds, btn);
+};
+
+// 触发浏览器下载（保存到用户电脑，不是后端入队）
+async function _triggerBrowserDownload(filename, key, isLocal) {
+  let url;
+  if (isLocal) {
+    url = `/v1/grok-files/${encodeURIComponent(filename)}`;
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    return;
+  }
+  // 远程文件：fetch + 鉴权 → blob → 触发下载
+  toast('准备中…', '');
+  try {
+    const r = await fetch(`/v1/grok/assets/download?key=${encodeURIComponent(key)}&filename=${encodeURIComponent(filename)}`,
+      { headers: { 'Authorization': 'Bearer ' + getKey() } });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const blob = await r.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = objUrl; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(objUrl), 60000);
+  } catch(e) {
+    toast('下载失败: ' + e.message, 'error');
+  }
+}
+
+// 单独切换选中（点 checkbox 时使用）
+window.filesToggleSelect = function(card) {
+  if (card.classList.contains('unavailable')) return;
+  card.classList.toggle('selected');
+  _updateFilesSelCount();
+};
+
+// 单卡片删除（hover 显示，进后端队列；并发上限 2）
+window.filesQuickDelete = function(btn) {
+  const card = btn.closest('.file-card');
+  if (!card) return;
+  if (card.classList.contains('cloud-deleted') || card.classList.contains('deleting') || card.classList.contains('queued-del')) return;
+  if (!confirm('从 Grok 云端删除该文件？\n（本地已下载文件保留）')) return;
+  card.classList.add('queued-del');
+  api('POST', '/v1/grok-files/deletes', { asset_ids: [card.dataset.id] })
+    .then(() => {
+      _trackDeleteJob(card);
+    })
+    .catch(e => {
+      card.classList.remove('queued-del');
+      toast('删除失败: ' + e.message, 'error');
+    });
+};
+
+// 跟踪删除作业完成（轮询 deletes 队列）
+let _delPollTimer = null;
+const _delPendingCards = new Map();  // asset_id → card
+function _trackDeleteJob(card) {
+  _delPendingCards.set(card.dataset.id, card);
+  if (_delPollTimer) return;
+  _delPollTimer = setInterval(async () => {
+    if (_delPendingCards.size === 0) {
+      clearInterval(_delPollTimer); _delPollTimer = null; return;
+    }
+    try {
+      // 按 asset_ids 精准查（避免 LIMIT 截断导致 ID 拿不到最新状态）
+      const ids = [..._delPendingCards.keys()];
+      const d = await api('GET', `/v1/grok-files/deletes?asset_ids=${encodeURIComponent(ids.join(','))}`);
+      const seen = new Set();
+      for (const job of (d.deletes || [])) {
+        seen.add(job.asset_id);
+        const c = _delPendingCards.get(job.asset_id);
+        if (!c) continue;
+        if (job.status === 'done') {
+          _delPendingCards.delete(job.asset_id);
+          c.classList.remove('queued-del', 'deleting', 'selected');
+          // 仅打"云端删除"标识，卡片保留显示（本地文件未删，仍可预览）
+          c.classList.add('cloud-deleted-mark');
+          // 若本地未下载 → 视为彻底失效，从列表移除
+          if (!c.classList.contains('downloaded')) {
+            c.remove();
+          }
+        } else if (job.status === 'failed') {
+          _delPendingCards.delete(job.asset_id);
+          c.classList.remove('queued-del');
+          c.classList.add('save-error');
+          toast('删除失败: ' + job.error, 'error');
+        } else if (job.status === 'running') {
+          c.classList.remove('queued-del');
+          c.classList.add('deleting');
+        }
+      }
+      // 本轮没在 DB 中找到对应 job 的 asset_id（可能根本未入队 / 误加 class）→ 解除卡死
+      for (const aid of ids) {
+        if (seen.has(aid)) continue;
+        const c = _delPendingCards.get(aid);
+        if (!c) continue;
+        _delPendingCards.delete(aid);
+        c.classList.remove('queued-del', 'deleting');
+      }
+    } catch { /* ignore */ }
+  }, 2000);
+}
+
+// 单卡片下载按钮：未下载先入后端队列存盘 → 完成后触发浏览器保存
+window.filesQuickDownload = async function(btn) {
+  const card = btn.closest('.file-card');
+  if (!card) return;
+  const filename = card.dataset.name;
+  if (card.classList.contains('downloaded')) {
+    _triggerBrowserDownload(filename, card.dataset.key, true);
+    return;
+  }
+  if (card.classList.contains('queued') || card.classList.contains('downloading')) {
+    toast('文件正在下载，请稍候…', ''); return;
+  }
+  card.classList.add('queued');
+  try {
+    const d = await api('POST', '/v1/grok-files/downloads', [{
+      asset_key: card.dataset.key, filename, size_bytes: parseInt(card.dataset.size) || 0,
+    }]);
+    const jobId = (d.ids || [])[0];
+    if (!jobId) throw new Error('入队失败');
+    _dlJobMap[jobId] = card;
+    toast('已入下载队列，完成后将自动保存到本机', '');
+    _trackForBrowserSave(jobId, filename);
+  } catch(e) {
+    card.classList.remove('queued');
+    toast('提交失败: ' + e.message, 'error');
   }
 };
 
+// 跟踪下载完成后触发浏览器保存
+function _trackForBrowserSave(jobId, filename) {
+  const poll = setInterval(async () => {
+    try {
+      const since = Date.now()/1000 - 600;
+      const d = await api('GET', `/v1/grok-files/downloads?since=${since}`);
+      const job = (d.downloads || []).find(j => j.id === jobId);
+      if (!job) return;
+      const card = _dlJobMap[jobId];
+      if (job.status === 'done') {
+        clearInterval(poll);
+        if (card) {
+          card.classList.remove('queued', 'downloading');
+          card.classList.add('downloaded');
+          const localFn = (job.path || '').split('/').pop() || filename;
+          card.dataset.thumbUrl = `/v1/grok-files/${encodeURIComponent(localFn)}`;
+          card.classList.remove('loaded');
+          _loadCardThumb(card, card.dataset.thumbUrl);
+          delete _dlJobMap[jobId];
+        }
+        _triggerBrowserDownload(filename, '', true);
+        toast('下载完成，已保存到本机', 'success');
+        await _refreshLocalFilesSet();
+      } else if (job.status === 'failed') {
+        clearInterval(poll);
+        if (card) { card.classList.remove('queued', 'downloading'); card.classList.add('save-error'); }
+        delete _dlJobMap[jobId];
+        toast('下载失败: ' + job.error, 'error');
+      } else if (job.status === 'running' && card) {
+        card.classList.remove('queued'); card.classList.add('downloading');
+      }
+    } catch { /* ignore */ }
+  }, 2000);
+}
+
+// 预览模态里的下载按钮（兼容 files / gallery 两种源）
+window.filesPreviewDownload = function() {
+  const all = _previewableCards();
+  if (_previewIndex < 0 || _previewIndex >= all.length) return;
+  const card = all[_previewIndex];
+  const item = _previewItemFromCard(card);
+  if (!item) return;
+  const a = document.createElement('a');
+  a.href = item.url;
+  a.download = item.filename;
+  document.body.appendChild(a); a.click(); a.remove();
+};
+
+// 预览模态里的删除按钮（兼容 files / gallery）
+window.filesPreviewDelete = async function() {
+  const all = _previewableCards();
+  if (_previewIndex < 0 || _previewIndex >= all.length) return;
+  const card = all[_previewIndex];
+  if (!confirm('确认删除该文件？')) return;
+  try {
+    if (_previewSource === 'gallery') {
+      // gallery item 对象
+      const sid = card.session_id;
+      const fn = card.filename;
+      await api('DELETE', `/v1/images/file/${encodeURIComponent(sid)}/${encodeURIComponent(fn)}`);
+      // 从全量数组移除
+      _galleryPreviewItems.splice(_previewIndex, 1);
+      // 同步 grid 上的 tile（如果存在）
+      const tile = document.querySelector(`#gallery-grid .masonry-tile[data-session="${sid}"][data-filename="${fn}"]`);
+      if (tile) {
+        tile.classList.add('deleted');
+        setTimeout(() => tile.remove(), 280);
+      }
+    } else {
+      // files 源（已下载本地文件）
+      const fn = card.dataset.name;
+      await api('DELETE', `/v1/grok-files/${encodeURIComponent(fn)}`);
+      // 移除卡片状态
+      card.classList.remove('downloaded', 'loaded');
+      const img = card.querySelector('.file-thumb-img');
+      if (img) img.removeAttribute('src');
+      const v = card.querySelector('.file-thumb-video');
+      if (v) v.remove();
+      _localFilesSet.delete(card.dataset.id);
+      // 已下载列表里把它去掉，预览源会动态变化
+    }
+    toast('已删除', 'success');
+    // 删除后调整索引并重渲
+    const newAll = _previewableCards();
+    if (newAll.length === 0) {
+      filesPreviewClose();
+      return;
+    }
+    if (_previewIndex >= newAll.length) _previewIndex = newAll.length - 1;
+    _renderPreview();
+  } catch(e) {
+    toast('删除失败: ' + e.message, 'error');
+  }
+};
+
+// ── 自动同步：服务端常驻 worker，前端只负责开关 + 显示状态 ──
+window.filesToggleSync = async function(on) {
+  try {
+    await api('POST', '/v1/grok-files/auto-sync', { enabled: on, interval_seconds: 300 });
+    toast(on ? '已开启后台自动同步（服务端常驻，每 5 分钟扫描）' : '已关闭后台自动同步', on ? 'success' : '');
+    _refreshSyncStatusUI();
+  } catch(e) {
+    toast('设置失败: ' + e.message, 'error');
+    document.getElementById('files-sync-toggle').checked = !on;
+  }
+};
+
+let _syncStatusTimer = null;
+let _lastSyncSnapshot = null;
+
+async function _refreshSyncStatusUI() {
+  const pill = document.getElementById('files-sync-status');
+  if (!pill) return;
+  let s;
+  try { s = await api('GET', '/v1/grok-files/auto-sync'); } catch { return; }
+  _lastSyncSnapshot = s;
+  if (!s.enabled) {
+    pill.style.display = 'none';
+    return;
+  }
+  pill.style.display = '';
+  pill.classList.toggle('running', !!s.state?.running);
+  pill.classList.toggle('error', !!s.state?.last_error);
+  const q = s.download_queue_recent || {};
+  const active = (q.pending || 0) + (q.running || 0) + (q.retrying || 0);
+  let txt;
+  if (s.state?.running) {
+    txt = `扫描中 (${s.state.last_pages_scanned} 页)`;
+  } else if (active > 0) {
+    const retryTxt = q.retrying ? ` · 重试中 ${q.retrying}` : '';
+    txt = `下载 ${q.running || 0}/${active}${retryTxt} · 完成 ${q.done || 0}`;
+  } else if (s.state?.last_error) {
+    txt = `上次失败: ${String(s.state.last_error).slice(0, 30)}`;
+  } else if (s.state?.next_run_at) {
+    const remain = Math.max(0, Math.round(s.state.next_run_at - Date.now()/1000));
+    txt = `下次扫描 ${Math.floor(remain/60)}m${remain%60}s`;
+  } else {
+    txt = '已就绪';
+  }
+  pill.innerHTML = `<span class="dot"></span>${txt}`;
+}
+
+function _row(k, v, cls) {
+  return `<div class="modal-row"><span class="k">${k}</span><span class="v ${cls||''}">${v}</span></div>`;
+}
+
+window.filesSyncDetails = function() {
+  const s = _lastSyncSnapshot;
+  if (!s) return;
+  const fmt = (ts) => ts ? new Date(ts*1000).toLocaleString('zh-CN') : '—';
+  const q = s.download_queue_recent || {};
+  const st = s.state || {};
+  const remain = st.next_run_at ? Math.max(0, Math.round(st.next_run_at - Date.now()/1000)) : 0;
+  const html = [
+    `<div class="modal-section-title">同步配置</div>`,
+    _row('开关状态', s.enabled ? '✅ 已开启' : '⛔ 已关闭', s.enabled ? 'success' : ''),
+    _row('扫描间隔', `${s.interval_seconds} 秒`),
+    _row('当前状态', st.running ? '🔄 扫描中…' : '⏸ 空闲', st.running ? 'running' : ''),
+    `<div class="modal-section-title">最近一轮</div>`,
+    _row('开始时间', fmt(st.last_run_at)),
+    _row('完成时间', fmt(st.last_finished_at)),
+    _row('扫描页数', st.last_pages_scanned || 0),
+    _row('入队数量', st.last_queued_count || 0),
+    st.last_error ? _row('错误信息', st.last_error, 'error') : '',
+    `<div class="modal-section-title">计划与累计</div>`,
+    _row('下次扫描', fmt(st.next_run_at) + (remain > 0 ? ` （${Math.floor(remain/60)}m${remain%60}s 后）` : '')),
+    _row('累计运行', `${st.total_runs || 0} 轮`),
+    _row('累计入队', `${st.total_queued_lifetime || 0} 个`),
+    `<div class="modal-section-title">下载队列（最近 1h）</div>`,
+    _row('待执行', q.pending || 0),
+    _row('执行中', q.running || 0, q.running > 0 ? 'running' : ''),
+    _row('重试中（指数退避）', q.retrying || 0, q.retrying > 0 ? 'running' : ''),
+    _row('已完成', q.done || 0, 'success'),
+    _row('失败（已耗尽重试）', q.failed || 0, q.failed > 0 ? 'error' : ''),
+  ].filter(Boolean).join('');
+  openGenericModal('自动同步状态', html);
+};
+
+window.openGenericModal = function(title, html) {
+  document.getElementById('generic-modal-title').textContent = title;
+  document.getElementById('generic-modal-body').innerHTML = html;
+  document.getElementById('generic-modal').classList.add('open');
+};
+
+window.closeGenericModal = function(e) {
+  if (e && e.target.closest('.modal-card') && e.target.tagName !== 'BUTTON') return;
+  document.getElementById('generic-modal').classList.remove('open');
+};
+
+// ESC 关拟态框
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const m = document.getElementById('generic-modal');
+    if (m && m.classList.contains('open')) closeGenericModal();
+  }
+});
+
+async function _pollDownloadJobs(jobIds, btn) {
+  if (!jobIds.length) return;
+  const pending = new Set(jobIds);
+  const since = Date.now() / 1000 - 5;
+  let done = 0, skip = 0, fail = 0;
+
+  while (pending.size > 0) {
+    await new Promise(r => setTimeout(r, 2000));
+    let data;
+    try { data = await api('GET', `/v1/grok-files/downloads?since=${since}`); }
+    catch { continue; }
+
+    for (const job of (data.downloads || [])) {
+      if (!pending.has(job.id)) continue;
+      const card = _dlJobMap[job.id];
+      if (job.status === 'running' && card) {
+        card.classList.remove('queued');
+        card.classList.add('downloading');
+      } else if (job.status === 'done') {
+        pending.delete(job.id);
+        if (card) {
+          card.classList.remove('downloading', 'queued');
+          card.classList.add('saved', 'downloaded');
+          const localFn = (job.path || '').split('/').pop();
+          if (localFn) card.dataset.thumbUrl = `/v1/grok-files/${encodeURIComponent(localFn)}`;
+          setTimeout(() => {
+            card.classList.remove('saved', 'loaded', 'selected');
+            if (card.dataset.thumbUrl) _loadCardThumb(card, card.dataset.thumbUrl);
+          }, 1200);
+        }
+        done++;
+        delete _dlJobMap[job.id];
+      } else if (job.status === 'failed') {
+        pending.delete(job.id);
+        if (card) { card.classList.remove('downloading', 'queued'); card.classList.add('save-error'); }
+        fail++;
+        delete _dlJobMap[job.id];
+      }
+    }
+
+    const finished = done + skip + fail;
+    if (btn) btn.textContent = `后台下载中 ${finished}/${jobIds.length}…`;
+  }
+
+  const skipMsg = skip > 0 ? `，${skip} 个已存在` : '';
+  if (fail > 0) toast(`已保存 ${done} 个${skipMsg}，${fail} 个失败`, done > 0 ? '' : 'error');
+  else toast(`已保存 ${done} 个${skipMsg}，路径：data/grok-files/`, 'success');
+  if (btn) btn.textContent = '保存到本地';
+  await _refreshLocalFilesSet();
+};
+
+// 二次确认拟态框（用于高危操作）
+function _confirmTwiceModal(title, body1, body2, onConfirm) {
+  const html = `
+    <div style="font-size:13px;color:var(--fg);line-height:1.6">${body1}</div>
+    <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn btn-outline btn-sm" onclick="closeGenericModal()">取消</button>
+      <button class="btn btn-danger btn-sm" id="confirm-step1-btn">我知道风险，下一步</button>
+    </div>`;
+  openGenericModal(title, html);
+  document.getElementById('confirm-step1-btn').onclick = () => {
+    const html2 = `
+      <div style="font-size:13px;color:#b91c1c;line-height:1.6;font-weight:500">${body2}</div>
+      <div style="margin-top:14px;display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-outline btn-sm" onclick="closeGenericModal()">取消</button>
+        <button class="btn btn-danger btn-sm" id="confirm-step2-btn">确认执行（不可撤销）</button>
+      </div>`;
+    document.getElementById('generic-modal-title').textContent = '⚠️ 最终确认';
+    document.getElementById('generic-modal-body').innerHTML = html2;
+    document.getElementById('confirm-step2-btn').onclick = () => {
+      closeGenericModal();
+      onConfirm();
+    };
+  };
+}
+
+window.filesWipeCloud = function() {
+  _confirmTwiceModal(
+    '⚠️ 清空 Grok 云端文件',
+    '将把当前 DB 中已知的所有 Grok 云端文件加入删除队列。<br><br>' +
+    '<b style="color:#047857">本地已下载文件保留不动</b>，仅清空云端。<br>' +
+    '云端删除并发限制为 2，全部完成可能需要数分钟。',
+    '此操作不可恢复！是否确认清空 Grok 云端所有文件？',
+    async () => {
+      try {
+        const r = await api('POST', '/v1/grok-files/wipe-cloud');
+        if (r.queued > 0) {
+          toast(`已提交 ${r.queued} 个删除任务到后台队列`, 'success');
+          // 触发本地刷新
+          setTimeout(() => loadFiles(true), 1500);
+        } else {
+          toast(r.message || '无可删除的云端文件', '');
+        }
+      } catch(e) {
+        toast('提交失败: ' + e.message, 'error');
+      }
+    }
+  );
+};
+
+// 批量删除：进后端队列（并发上限 2），UI 跟踪状态
 window.filesDeleteSelected = async function() {
   const cards = [...document.querySelectorAll('#files-grid .file-card.selected')];
   if (!cards.length) { toast('请先选择文件', 'error'); return; }
-  if (!confirm(`确认删除 ${cards.length} 个 Grok 云端文件？此操作不可恢复。`)) return;
+  if (!confirm(`确认从 Grok 云端删除 ${cards.length} 个文件？\n（云端删除，本地已下载文件保留）`)) return;
   const btn = document.getElementById('files-del-btn');
-  btn.disabled = true; btn.textContent = `删除中…`;
-  let ok = 0, fail = 0;
-  for (const card of cards) {
-    try {
-      await api('POST', `/v1/grok/assets/${encodeURIComponent(card.dataset.id)}/delete`);
-      card.style.transition = 'opacity .2s, transform .2s';
-      card.style.opacity = '0'; card.style.transform = 'scale(.9)';
-      setTimeout(() => card.remove(), 220);
-      ok++;
-    } catch(e) {
-      fail++;
-      card.classList.remove('selected');
-    }
+  btn.disabled = true;
+  try {
+    const ids = cards.map(c => c.dataset.id);
+    const r = await api('POST', '/v1/grok-files/deletes', { asset_ids: ids });
+    // 标记 queued-del 并启动轮询
+    cards.forEach(c => {
+      c.classList.remove('selected', 'save-error');
+      c.classList.add('queued-del');
+      _trackDeleteJob(c);
+    });
+    toast(`已提交 ${r.queued} 个删除任务到后台队列（并发 2）`, 'success');
+    _updateFilesSelCount();
+  } catch(e) {
+    toast('提交失败: ' + e.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '删除选中';
   }
-  await new Promise(r => setTimeout(r, 250));
-  _updateFilesSelCount();
-  document.getElementById('files-empty').style.display =
-    document.querySelectorAll('#files-grid .file-card').length === 0 ? '' : 'none';
-  if (fail > 0) toast(`已删除 ${ok} 个，${fail} 个失败`, ok > 0 ? '' : 'error');
-  else toast(`已删除 ${ok} 个文件`, 'success');
-  btn.disabled = false; btn.textContent = '删除选中';
 };
 
 // ── Init ───────────────────────────────────────────────────────
@@ -2640,6 +4342,25 @@ function initApp() {
   initLightbox();
   switchView('home');
   refreshQuota();
+  // textarea 自适应高度（min/max 由 CSS 限定）
+  document.querySelectorAll('#gen-prompt, #q-prompt, #chat-input').forEach(_attachAutosize);
+  // 幻灯片偏好恢复
+  const _si = localStorage.getItem('files-slide-interval');
+  if (_si) { const e = document.getElementById('slide-interval'); if (e) e.value = _si; }
+  const _sv = localStorage.getItem('files-slide-skip-video');
+  if (_sv !== null) { const e = document.getElementById('slide-skip-video'); if (e) e.checked = _sv === '1'; }
+  // 从服务器读自动同步状态（持久化在 mini.toml）
+  api('GET', '/v1/grok-files/auto-sync').then(s => {
+    const t = document.getElementById('files-sync-toggle');
+    if (t) t.checked = !!s.enabled;
+    _lastSyncSnapshot = s;
+    _refreshSyncStatusUI();
+  }).catch(() => {});
+  // 每 3 秒刷新一次自动同步指示器
+  if (_syncStatusTimer) clearInterval(_syncStatusTimer);
+  _syncStatusTimer = setInterval(() => {
+    if (S.view === 'files') _refreshSyncStatusUI();
+  }, 3000);
   api('GET', '/v1/images/stream/status').then(d => {
     if (d.running) {
       S.streamRunning = true;

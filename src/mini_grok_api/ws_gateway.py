@@ -13,26 +13,23 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncGenerator, Callable
 
 import aiohttp
+from aiohttp_socks import ProxyConnector
 
 from .config import Settings
 from .grok_client import (
     GrokClientError,
-    IMAGE_DIR,
     ImageResult,
     _build_imagine_msg,
     _build_reset_msg,
     _collect_batch,
-    _init_session,
     _ws_connect,
     _ws_headers,
-    resolve_aspect_ratio,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,6 +50,8 @@ class _WsJob:
     on_error: Callable[[Exception], None]
     on_done: Callable[[], None]
     image_data: str | None = None
+    moderated_count: int = 0      # 累计被审核数（部分审核也会增加）
+    total_attempted: int = 0      # 累计 slot 总数
 
 
 class WsGateway:
@@ -143,8 +142,12 @@ class WsGateway:
         interval_seconds: float,
         max_batches: int,
         image_data: str | None = None,
+        stats_sink: dict | None = None,  # 可选：用于回传 moderated/total_attempted 累计
     ) -> AsyncGenerator[list[ImageResult], None]:
-        """持续生图：提交 job，通过 async generator yield 每批结果。"""
+        """持续生图：提交 job，通过 async generator yield 每批结果。
+
+        stats_sink 字典会在每次 yield 前被更新为最新的 {moderated, attempted} 计数；
+        外层任务可读取以累计被审核数量。"""
         batch_q: asyncio.Queue[list[ImageResult] | BaseException | None] = asyncio.Queue()
 
         def on_batch(batch: list[ImageResult]) -> None:
@@ -173,6 +176,9 @@ class WsGateway:
 
         while True:
             item = await batch_q.get()
+            if stats_sink is not None:
+                stats_sink["moderated"] = job.moderated_count
+                stats_sink["attempted"] = job.total_attempted
             if item is _SENTINEL:
                 return
             if isinstance(item, BaseException):
@@ -219,12 +225,18 @@ class WsGateway:
                 break
 
             try:
-                connector = aiohttp.TCPConnector(ssl=False)
+                # 代理类型分流：SOCKS5 用 ProxyConnector，HTTP/无代理用 TCPConnector
+                if proxy and (proxy.startswith("socks5://") or proxy.startswith("socks://") or proxy.startswith("socks5h://")):
+                    connector = ProxyConnector.from_url(proxy, ssl=False)
+                    ws_proxy = None  # SOCKS5 已在 connector 层接管，不再传给 ws_connect
+                else:
+                    connector = aiohttp.TCPConnector(ssl=False)
+                    ws_proxy = proxy
                 async with aiohttp.ClientSession(
                     connector=connector,
                     headers=_ws_headers(settings),
                 ) as http_sess:
-                    ws = await _ws_connect(http_sess, timeout, proxy)
+                    ws = await _ws_connect(http_sess, timeout, ws_proxy)
                     async with ws:
                         await ws.send_json(_build_reset_msg())
                         await ws.send_json(_build_imagine_msg(
@@ -243,13 +255,33 @@ class WsGateway:
                                 return
 
                             deadline = asyncio.get_event_loop().time() + timeout
-                            results, ws_closed = await _collect_batch(
+                            outcome = await _collect_batch(
                                 ws, deadline, session_dir=job.session_dir
                             )
+                            results = outcome.results
+                            ws_closed = outcome.ws_closed
 
+                            # 累计被审计数和总尝试数（无论本批是否有产出）
+                            job.total_attempted += outcome.total_slots
+                            job.moderated_count += outcome.moderated_count
                             if results:
                                 job.on_batch(results)
                                 batch_count += 1
+                            if outcome.moderated_count > 0:
+                                logger.info(
+                                    "batch moderated stats: %d/%d images moderated (cumulative: %d/%d)",
+                                    outcome.moderated_count, outcome.total_slots,
+                                    job.moderated_count, job.total_attempted,
+                                )
+
+                            # 整批全审 + 0 产出 → 抛错让上层标失败
+                            if (outcome.total_slots > 0
+                                    and outcome.moderated_count == outcome.total_slots
+                                    and not results):
+                                raise GrokClientError(
+                                    f"本批 {outcome.total_slots} 张全部被 Grok 内容审核拦截 (moderated)",
+                                    status_code=403, code="all_moderated",
+                                )
 
                             if ws_closed:
                                 logger.info("WsGateway WS closed by server, reconnecting")

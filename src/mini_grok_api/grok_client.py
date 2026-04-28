@@ -6,7 +6,6 @@ import asyncio
 import base64
 import json
 import logging
-import random
 import re
 import time
 import uuid
@@ -24,6 +23,9 @@ from .config import Settings
 logger = logging.getLogger(__name__)
 
 CHAT_URL = "https://grok.com/rest/app-chat/conversations/new"
+_RATE_LIMITS_URL = "https://grok.com/rest/rate-limits"
+# TODO: x-statsig-id / baggage 当前硬编码，理论上有被指纹识别风险
+#       Grok web 端每个请求生成不同值。后续重构成动态生成。
 SKILLS_URL = "https://grok.com/rest/skills"
 WS_IMAGINE_URL = "wss://grok.com/ws/imagine/listen"
 
@@ -59,50 +61,57 @@ class GrokClientError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class GrokTextDelta:
-    content: str
+    content: str = ""
     done: bool = False
+    image_urls: tuple[str, ...] = ()  # LLM 自主生成的图片 URL（assets.grok.com/...）
+    placeholder_card: bool = False     # cardAttachment 占位（image_chunk=null），LLM 已下发生图意图
 
 
-def build_chat_payload(message: str, mode_id: str) -> dict[str, Any]:
+def build_chat_payload(
+    message: str, mode_id: str,
+    *, image_count: int = 2, file_attachments: list[str] | None = None,
+    parent_response_id: str | None = None,
+) -> dict[str, Any]:
+    """对齐 grok 网页端 /rest/app-chat/conversations/new 真实 payload。
+
+    关键字段：
+    - modeId="fast"（不是任意 LLM 名）— 让后端识别为标准 chat 工具调用模式
+    - metadata={"request_metadata":{}}（不是 responseMetadata）
+    - parentResponseId 首条消息可为 None
+    """
     return {
-        "collectionIds": [],
-        "connectors": [],
+        "message": message,
+        "parentResponseId": parent_response_id,
+        "disableSearch": False,
+        "enableImageGeneration": True,
+        "imageAttachments": [],
+        "returnImageBytes": False,
+        "returnRawGrokInXaiRequest": False,
+        "fileAttachments": list(file_attachments or []),
+        "enableImageStreaming": True,
+        "imageGenerationCount": max(1, int(image_count or 2)),
+        "forceConcise": False,
+        "enableSideBySide": True,
+        "sendFinalMetadata": True,
+        "metadata": {"request_metadata": {}},
+        "disableTextFollowUps": False,
+        "isFromGrokFiles": False,
+        "disableMemory": False,
+        "forceSideBySide": False,
+        "isAsyncChat": False,
+        "skipCancelCurrentInflightRequests": False,
+        "isRegenRequest": False,
+        "disableSelfHarmShortCircuit": False,
         "deviceEnvInfo": {
             "darkModeEnabled": False,
             "devicePixelRatio": 2,
-            "screenHeight": 1329,
-            "screenWidth": 2056,
-            "viewportHeight": 1083,
-            "viewportWidth": 2056,
+            "screenWidth": 1800,
+            "screenHeight": 1169,
+            "viewportWidth": 1800,
+            "viewportHeight": 976,
         },
-        "disableMemory": True,
-        "disableSearch": False,
-        "disableSelfHarmShortCircuit": False,
-        "disableTextFollowUps": False,
-        "enableImageGeneration": True,
-        "enableImageStreaming": True,
-        "enableSideBySide": True,
-        "fileAttachments": [],
-        "forceConcise": False,
-        "forceSideBySide": False,
-        "imageAttachments": [],
-        "imageGenerationCount": 2,
-        "isAsyncChat": False,
-        "message": message,
-        "modeId": mode_id,
-        "responseMetadata": {},
-        "returnImageBytes": False,
-        "returnRawGrokInXaiRequest": False,
-        "searchAllConnectors": False,
-        "sendFinalMetadata": True,
-        "temporary": True,
-        "toolOverrides": {
-            "gmailSearch": False,
-            "googleCalendarSearch": False,
-            "outlookSearch": False,
-            "outlookCalendarSearch": False,
-            "googleDriveSearch": False,
-        },
+        # mode_id 透传供调用方自定义；默认 "fast"
+        "modeId": mode_id or "fast",
     }
 
 
@@ -125,17 +134,59 @@ def parse_text_delta(data: str) -> list[GrokTextDelta]:
         obj = json.loads(data)
     except json.JSONDecodeError:
         return []
-    response = ((obj.get("result") or {}).get("response") or {})
+    # chat SSE 顶层是 result.{xxx} 不是 result.response.{xxx}
+    result = obj.get("result") or {}
+    response = result.get("response") if isinstance(result.get("response"), dict) else result
     if not isinstance(response, dict):
         return []
+    deltas: list[GrokTextDelta] = []
+
+    # cardAttachment 是 grok chat 出图的载体。两个阶段：
+    #   阶段 1：占位 — jsonData.image_chunk == null，仅含 prompt（生图请求已下发）
+    #   阶段 2：增量 — jsonData.image_chunk.{imageUrl, progress, moderated, imageUuid}
+    #            progress=50 是 part-0 渐进式预览，progress=100 才是最终图
+    # 真实 URL：image_chunk.imageUrl 形如 users/{uid}/generated/{uuid}/image.jpg
+    # 拼 https://assets.grok.com/{imageUrl} 即可下载
+    card = response.get("cardAttachment")
+    if isinstance(card, dict):
+        raw = card.get("jsonData")
+        if isinstance(raw, str) and raw:
+            try:
+                inner = json.loads(raw)
+                if inner.get("cardType") == "generated_image_card":
+                    ic = inner.get("image_chunk")
+                    if isinstance(ic, dict):
+                        url = ic.get("imageUrl") or ""
+                        progress = ic.get("progress")
+                        moderated = bool(ic.get("moderated"))
+                        # 只取最终图：progress=100 且未被审；忽略 part-N 的中间帧
+                        if url and progress == 100 and not moderated:
+                            full = url if url.startswith("http") else f"https://assets.grok.com/{url.lstrip('/')}"
+                            deltas.append(GrokTextDelta(image_urls=(full,)))
+                    else:
+                        # image_chunk 为 null 说明这是占位（LLM 已下发生图意图）
+                        deltas.append(GrokTextDelta(placeholder_card=True))
+            except Exception:
+                pass
+
+    # 2. modelResponse / userResponse 中可能直接含 generatedImageUrls
+    for key in ("modelResponse", "userResponse"):
+        msg = response.get(key)
+        if isinstance(msg, dict):
+            urls = msg.get("generatedImageUrls") or []
+            if urls:
+                deltas.append(GrokTextDelta(image_urls=tuple(str(u) for u in urls if u)))
+
     if response.get("isSoftStop") or response.get("finalMetadata"):
-        return [GrokTextDelta("", done=True)]
+        deltas.append(GrokTextDelta(done=True))
+        return deltas
     token = response.get("token")
     if token is None or response.get("isThinking") is True:
-        return []
+        return deltas
     if response.get("messageTag") != "final":
-        return []
-    return [GrokTextDelta(str(token))]
+        return deltas
+    deltas.append(GrokTextDelta(content=str(token)))
+    return deltas
 
 
 def _contains_cloudflare_challenge(status_code: int, body: str) -> bool:
@@ -332,6 +383,169 @@ async def stream_chat(
             raise GrokClientError(f"Grok stream read failed: {exc}", status_code=502) from exc
 
 
+async def chat_imagine(
+    settings: Settings,
+    *,
+    message: str,
+    mode_id: str = "fast",
+    image_count: int = 2,
+    aspect_ratio: str = "1:1",
+) -> tuple[list[str], str]:
+    """通过 chat 端口请求 LLM 生图（LLM 会自动 rephrase prompt）。
+
+    image_count 与 aspect_ratio 都通过 **prompt 前缀注入** 控制（grok 网页端就是这么做的：
+    用户在 message 里直接写"我要5张 portrait\\n\\n..."），payload 字段只是兜底。
+
+    返回 (image_urls, model_text_summary)。image_urls 是 assets.grok.com 路径或绝对 URL。
+    """
+    if not settings.grok_cookie:
+        raise GrokClientError("GROK_COOKIE is not configured", status_code=400, code="missing_grok_cookie")
+
+    n = max(1, int(image_count or 2))
+    # 抓包确认 cardAttachment.jsonData.orientation 字段取值是 portrait/landscape/square
+    ratio = (aspect_ratio or "1:1").strip()
+    if ratio in ("1:1",):
+        orientation = "square"
+    elif ratio in ("16:9", "3:2"):
+        orientation = "landscape"
+    else:  # 9:16 / 2:3 等
+        orientation = "portrait"
+    # grok 网页端靠 prompt 头部数量声明控制张数；imageGenerationCount 只是兜底字段，
+    # 抓包显示用户写"我要5张"配 imageGenerationCount=2 时 LLM 实际生成了 5 张。
+    # 因此 prompt 注入的数量为准，不在前端硬性限制。
+    # 显式声明数量 + 宽高比 + 方向，让 LLM 三个信号都接收到
+    message = (
+        f"we need {n} images with aspect ratio {ratio} ({orientation} orientation)\n\n"
+        f"{message}"
+    )
+
+    payload = json.dumps(
+        # imageGenerationCount 字段保留 ≤ 4 兜底以匹配 grok 网页端行为
+        build_chat_payload(message, mode_id, image_count=min(n, 4)),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    image_urls: list[str] = []
+    text_chunks: list[str] = []
+    placeholder_count = 0  # cardAttachment(image_chunk=null) 的占位数 — LLM 已下发生图意图
+    raw_lines: list[str] = []  # 完整原始 SSE，失败时落盘
+    async with AsyncSession(**_session_kwargs(settings)) as session:
+        try:
+            response = await session.post(
+                CHAT_URL, headers=_headers(settings), data=payload,
+                timeout=settings.grok_timeout_seconds, stream=True,
+            )
+        except Exception as exc:
+            raise GrokClientError(f"chat transport failed: {exc}", status_code=502) from exc
+        if response.status_code != 200:
+            body = response.content.decode("utf-8", "replace")[:400]
+            if _contains_cloudflare_challenge(response.status_code, body):
+                raise GrokClientError("Cloudflare challenge", status_code=403, code="cloudflare_challenge")
+            raise GrokClientError(
+                f"chat returned {response.status_code}", status_code=response.status_code,
+                body=body, code="upstream_error",
+            )
+        try:
+            async for raw_line in response.aiter_lines():
+                # 原始行存入 raw_lines，失败时落盘备查
+                try:
+                    line_str = (raw_line.decode("utf-8", "replace")
+                                if isinstance(raw_line, (bytes, bytearray)) else str(raw_line))
+                    raw_lines.append(line_str)
+                except Exception:
+                    pass
+                event_type, data = classify_line(raw_line)
+                if event_type == "done":
+                    break
+                if event_type != "data":
+                    continue
+                for delta in parse_text_delta(data):
+                    if delta.placeholder_card:
+                        placeholder_count += 1
+                    if delta.image_urls:
+                        for u in delta.image_urls:
+                            if not u:
+                                continue
+                            # `prompt://...` 是 LLM 改写后的 prompt 透传伪 URL，不是真实图片
+                            if u.startswith("prompt://"):
+                                logger.debug("chat_imagine: rephrased prompt=%s", u[9:80])
+                                continue
+                            if u not in image_urls:
+                                image_urls.append(u)
+                                logger.info("chat_imagine: got image url=%s", u[:120])
+                    if delta.content:
+                        text_chunks.append(delta.content)
+                    if delta.done and image_urls:
+                        # 拿到图就够了；若 LLM 还在絮叨可继续，但最简实现先 break
+                        return image_urls, "".join(text_chunks).strip()
+        except Exception as exc:
+            raise GrokClientError(f"chat stream read failed: {exc}", status_code=502) from exc
+    if not image_urls:
+        # 落盘原始 SSE 全文，方便复盘"为什么没拿到图"
+        try:
+            from pathlib import Path as _Path
+            import time as _t
+            dbg_dir = _Path("data/file")
+            dbg_dir.mkdir(parents=True, exist_ok=True)
+            ts = int(_t.time() * 1000)
+            dbg_path = dbg_dir / f"chat-debug-{ts}.log"
+            with open(dbg_path, "w", encoding="utf-8") as f:
+                f.write(f"# chat_imagine no-image debug dump\n")
+                f.write(f"# placeholder_count={placeholder_count} image_urls={image_urls}\n")
+                f.write(f"# request_message_head={message[:300]!r}\n")
+                f.write("# ===== raw SSE lines =====\n")
+                for ln in raw_lines:
+                    f.write(ln.rstrip("\n") + "\n")
+            logger.warning("chat_imagine: dumped raw SSE to %s", dbg_path)
+        except Exception as _e:
+            logger.warning("chat_imagine: failed to dump raw SSE: %s", _e)
+        llm_text = "".join(text_chunks).strip()
+        snippet = (llm_text[:300] + "…") if len(llm_text) > 300 else llm_text
+        # 区分两种"无图"情况：
+        #  A) LLM 真拒绝：placeholder_count=0，LLM 输出"I'm sorry, I must decline..."
+        #  B) Grok 内容审核拦截：placeholder_count>0，LLM 已下发生图意图（cardAttachment 占位）
+        #     但 grok 后端的 imagine pipeline 没产出 image_chunk(progress=100) — 后置审核拦了
+        if placeholder_count > 0:
+            msg = (f"Grok 内容审核拦截（LLM 已下发 {placeholder_count} 张图的生图意图，"
+                   f"但 imagine 后端未产出实际图片，多见于敏感内容触发后置审核）")
+            code = "image_moderated"
+        else:
+            msg = "LLM 拒绝：未下发任何生图意图（safety/decline）"
+            code = "chat_no_image"
+        if snippet:
+            msg += f" — LLM 回复：{snippet}"
+        logger.warning("chat_imagine: no images, placeholders=%d llm_text_len=%d snippet=%s",
+                       placeholder_count, len(llm_text), snippet[:120])
+        raise GrokClientError(msg, status_code=403, code=code)
+    return image_urls, "".join(text_chunks).strip()
+
+
+async def query_rate_limits(settings: Settings, *, model_name: str) -> dict[str, Any]:
+    """查询指定 model 的 chat 配额（POST /rest/rate-limits）。
+
+    Response 示例: {"windowSizeSeconds":7200,"remainingQueries":38,"totalQueries":50,
+                   "lowEffortRateLimits":null,"highEffortRateLimits":null}
+    """
+    if not settings.grok_cookie:
+        raise GrokClientError("GROK_COOKIE is not configured", status_code=400, code="missing_grok_cookie")
+    payload = json.dumps({"modelName": model_name}).encode("utf-8")
+    headers = _headers(settings)
+    headers["Content-Type"] = "application/json"
+    async with AsyncSession(**_session_kwargs(settings)) as session:
+        try:
+            resp = await session.post(_RATE_LIMITS_URL, headers=headers, data=payload, timeout=30.0)
+        except Exception as exc:
+            raise GrokClientError(f"rate-limits request failed: {exc}", status_code=502) from exc
+        body = resp.content.decode("utf-8", "replace")
+        if resp.status_code != 200:
+            if _contains_cloudflare_challenge(resp.status_code, body):
+                raise GrokClientError("Cloudflare challenge", status_code=403, code="cloudflare_challenge")
+            raise GrokClientError(f"rate-limits returned {resp.status_code}", status_code=resp.status_code, body=body[:200])
+        try:
+            return json.loads(body)
+        except Exception as exc:
+            raise GrokClientError(f"rate-limits parse failed: {exc}", status_code=502) from exc
+
+
 async def complete_chat(settings: Settings, *, message: str, mode_id: str) -> str:
     chunks: list[str] = []
     async for delta in stream_chat(settings, message=message, mode_id=mode_id):
@@ -521,31 +735,56 @@ async def _ws_connect(session: aiohttp.ClientSession, timeout: float, proxy: str
     raise GrokClientError(f"Imagine WebSocket connect failed: {last_exc}", status_code=502) from last_exc
 
 
+_SILENT_BLOCK_GRACE_SECONDS = 30.0  # 无任何 slot 帧时的早期放弃阈值
+
+
+@dataclass
+class BatchOutcome:
+    results: list[ImageResult]
+    ws_closed: bool
+    total_slots: int
+    moderated_count: int
+    r_rated_count: int
+
+
 async def _collect_batch(
     ws: aiohttp.ClientWebSocketResponse,
     deadline: float,
     *,
     batch_probe_s: float = 3.0,
     session_dir: Path,
-) -> tuple[list[ImageResult], bool]:
+) -> BatchOutcome:
     """
-    从已发送请求的 WS 上收一批图片，返回 (results, ws_closed)。
+    从已发送请求的 WS 上收一批图片。
 
     协议：
     - start_stage 帧 → 注册 slot
     - image 帧（中间预览）→ 缓存 blob/url，不保存
-    - completed 帧 → 保存成品
+    - completed 帧 → 保存成品；moderated:true 标记 slot.moderated 跳过
     - 所有已知 slot 都 completed 后，再探测 batch_probe_s 秒看有没有新 start_stage
-    - 若无新 start_stage → 本批结束
     """
     slots: dict[str, _ImgSlot] = {}
     results: list[ImageResult] = []
+    moderated_count = 0
+    r_rated_count = 0
     all_done_since: float | None = None
+    started_at = asyncio.get_event_loop().time()
 
     while True:
         now = asyncio.get_event_loop().time()
         if now >= deadline:
             break
+
+        # silent-block 早期检测：无任何 slot 帧 + 已等待 _SILENT_BLOCK_GRACE_SECONDS
+        if not slots and (now - started_at) >= _SILENT_BLOCK_GRACE_SECONDS:
+            logger.warning(
+                "imagine batch: no frames received within %.0fs — likely silent moderation block",
+                _SILENT_BLOCK_GRACE_SECONDS,
+            )
+            raise GrokClientError(
+                "Imagine likely blocked by content moderation (no response from upstream)",
+                status_code=403, code="silent_block",
+            )
 
         # 如果所有已知 slot 都完成，进入批次结束探测
         if slots and all(s.done for s in slots.values()):
@@ -553,7 +792,7 @@ async def _collect_batch(
                 all_done_since = now
             probe_remaining = batch_probe_s - (now - all_done_since)
             if probe_remaining <= 0:
-                return results, False
+                return BatchOutcome(results, False, len(slots), moderated_count, r_rated_count)
             recv_timeout = min(probe_remaining, deadline - now)
         else:
             all_done_since = None
@@ -562,13 +801,12 @@ async def _collect_batch(
         try:
             msg = await asyncio.wait_for(ws.receive(), timeout=recv_timeout)
         except asyncio.TimeoutError:
-            # 探测超时且所有 slot 完成 → 批次结束
             if slots and all(s.done for s in slots.values()):
-                return results, False
+                return BatchOutcome(results, False, len(slots), moderated_count, r_rated_count)
             continue
 
         if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-            return results, True
+            return BatchOutcome(results, True, len(slots), moderated_count, r_rated_count)
 
         if msg.type != aiohttp.WSMsgType.TEXT:
             continue
@@ -600,8 +838,11 @@ async def _collect_batch(
                     continue
                 slot.done = True
                 if data.get("moderated"):
+                    moderated_count += 1
                     logger.warning("imagine slot moderated: image_id=%s", image_id[:8])
                     continue
+                if data.get("r_rated"):
+                    r_rated_count += 1
                 if not slot.last_blob:
                     logger.warning("imagine slot completed but no blob: image_id=%s", image_id[:8])
                     continue
@@ -628,7 +869,7 @@ async def _collect_batch(
             err = data.get("err_msg") or str(data)
             raise GrokClientError(f"Imagine upstream error: {err}", status_code=502)
 
-    return results, False
+    return BatchOutcome(results, False, len(slots), moderated_count, r_rated_count)
 
 
 # generate_images 和 stream_imagine_batches 已迁移至 ws_gateway.WsGateway。
@@ -862,7 +1103,7 @@ async def get_video_link(settings: Settings, video_id: str) -> str | None:
 # ── Grok Files ──────────────────────────────────────────────────────────────
 
 _GROK_ASSETS_URL = "https://grok.com/rest/assets"
-_GROK_DELETE_URL = "https://grok.com/rest/media/post/delete"
+_GROK_DELETE_URL_BASE = "https://grok.com/rest/assets-metadata"
 _GROK_ASSETS_DL_BASE = "https://assets.grok.com"
 GROK_FILES_DIR = Path("data/grok-files")
 
@@ -871,6 +1112,18 @@ def _files_headers(settings: Settings) -> dict[str, str]:
     h = _headers(settings)
     h["Referer"] = "https://grok.com/files"
     h.pop("Content-Type", None)
+    return h
+
+
+def _dl_headers(settings: Settings) -> dict[str, str]:
+    """用于从 assets.grok.com 下载文件的请求头（跨域 CDN，Sec-Fetch-Site=cross-site）。"""
+    h = _headers(settings)
+    h["Referer"] = "https://grok.com/"
+    h["Sec-Fetch-Site"] = "cross-site"
+    h["Sec-Fetch-Dest"] = "document"
+    h["Sec-Fetch-Mode"] = "navigate"
+    h.pop("Content-Type", None)
+    h.pop("Origin", None)
     return h
 
 
@@ -911,20 +1164,38 @@ async def list_grok_assets(
             raise GrokClientError(f"Assets list failed: {exc}", status_code=502) from exc
 
 
-async def delete_grok_asset(settings: Settings, asset_id: str) -> None:
+async def delete_grok_asset(settings: Settings, asset_id: str) -> bool:
+    """删除 Grok 云端 asset。
+
+    真实 API：`DELETE /rest/assets-metadata/{asset_id}`（无 body）。
+
+    返回值：
+    - `True`  — API 返回 200，确认已从云端删除（应写入 cloud_deleted_at）
+    - `False` — API 返回 404/410，asset 已不在云端或不存在；调用方**不要**写
+                 cloud_deleted_at（避免误标），由后续全量同步校准
+    抛 GrokClientError — 其他失败（5xx、Cloudflare 挑战、网络错误）
+    """
     if not settings.grok_cookie:
         raise GrokClientError("GROK_COOKIE is not configured", status_code=400, code="missing_grok_cookie")
-    payload = json.dumps({"id": asset_id}).encode("utf-8")
+    if not asset_id:
+        raise GrokClientError("empty asset_id", status_code=400, code="bad_request")
+    url = f"{_GROK_DELETE_URL_BASE}/{asset_id}"
     h = _files_headers(settings)
-    h["Content-Type"] = "application/json"
+    h.pop("Content-Type", None)  # DELETE 无 body
     async with AsyncSession(**_session_kwargs(settings)) as sess:
         try:
-            resp = await sess.post(_GROK_DELETE_URL, headers=h, data=payload, timeout=30.0)
+            resp = await sess.request("DELETE", url, headers=h, timeout=30.0)
             body = resp.content.decode("utf-8", "replace")
-            if resp.status_code != 200:
-                if _contains_cloudflare_challenge(resp.status_code, body):
-                    raise GrokClientError("Cloudflare challenge", status_code=403, code="cloudflare_challenge")
-                raise GrokClientError(f"Delete returned {resp.status_code}", status_code=resp.status_code, body=body[:200])
+            if resp.status_code == 200:
+                return True
+            if resp.status_code in (404, 410):
+                logger.info("delete_grok_asset: %s returned %d (not on cloud)", asset_id, resp.status_code)
+                return False
+            if _contains_cloudflare_challenge(resp.status_code, body):
+                raise GrokClientError("Cloudflare challenge", status_code=403, code="cloudflare_challenge")
+            raise GrokClientError(
+                f"Delete returned {resp.status_code}", status_code=resp.status_code, body=body[:200]
+            )
         except GrokClientError:
             raise
         except Exception as exc:
@@ -936,31 +1207,32 @@ async def stream_grok_asset(settings: Settings, key: str):
     if not settings.grok_cookie:
         raise GrokClientError("GROK_COOKIE is not configured", status_code=400, code="missing_grok_cookie")
     url = f"{_GROK_ASSETS_DL_BASE}/{key}"
-    dl_headers = _headers(settings)
-    dl_headers["Referer"] = "https://grok.com/"
-    connector = aiohttp.TCPConnector(ssl=False)
-    session = aiohttp.ClientSession(connector=connector)
+    dl_headers = _dl_headers(settings)
+    sess = AsyncSession(**_session_kwargs(settings))
     try:
-        resp = await session.get(url, headers=dl_headers, timeout=aiohttp.ClientTimeout(total=120.0))
-        if resp.status not in (200, 206):
-            await session.close()
-            body = await resp.text()
-            raise GrokClientError(f"Asset download returned {resp.status}", status_code=resp.status, body=body[:200])
+        resp = await sess.get(url, headers=dl_headers, timeout=120.0, stream=True)
+        if resp.status_code not in (200, 206):
+            await sess.close()
+            raise GrokClientError(
+                f"Asset download returned {resp.status_code}",
+                status_code=resp.status_code,
+                body=resp.text[:200],
+            )
         content_type = resp.headers.get("Content-Type", "application/octet-stream")
 
         async def _gen():
             try:
-                async for chunk in resp.content.iter_chunked(65536):
+                async for chunk in resp.aiter_content(65536):
                     yield chunk
             finally:
-                await session.close()
+                await sess.close()
 
         return content_type, _gen()
     except GrokClientError:
-        await session.close()
+        await sess.close()
         raise
     except Exception as exc:
-        await session.close()
+        await sess.close()
         raise GrokClientError(f"Asset download failed: {exc}", status_code=502) from exc
 
 
@@ -1166,41 +1438,48 @@ def parse_cookie_string(cookie_str: str) -> dict[str, str]:
     return result
 
 
-async def save_grok_asset_local(settings: Settings, key: str, filename: str) -> str:
-    """从 assets.grok.com 下载文件并保存到 data/grok-files/，返回保存路径字符串。"""
+async def save_grok_asset_local(
+    settings: Settings, key: str, filename: str, size_bytes: int = 0
+) -> tuple[str, bool]:
+    """从 assets.grok.com 下载文件并保存到 data/grok-files/。
+
+    Returns:
+        (path, skipped) — skipped=True 表示文件已存在且大小一致，直接复用。
+    """
     if not settings.grok_cookie:
         raise GrokClientError("GROK_COOKIE is not configured", status_code=400, code="missing_grok_cookie")
+    if not key:
+        raise GrokClientError("Asset key is empty", status_code=400, code="missing_key")
     GROK_FILES_DIR.mkdir(parents=True, exist_ok=True)
     safe_name = re.sub(r'[^\w.\-]', '_', filename)[:200] or "file"
     dest = GROK_FILES_DIR / safe_name
-    # 防止重名覆盖
-    stem = dest.stem
-    suffix = dest.suffix
-    counter = 1
-    while dest.exists():
-        dest = GROK_FILES_DIR / f"{stem}_{counter}{suffix}"
-        counter += 1
+
+    # 文件存在且大小一致 → 跳过；大小不一致 → 重新下载（上次下载不完整）
+    if dest.exists():
+        if size_bytes <= 0 or dest.stat().st_size == size_bytes:
+            logger.info("grok file already exists, skipping: %s", dest)
+            return str(dest), True
+        logger.info("grok file size mismatch (%d vs %d), re-downloading: %s",
+                    dest.stat().st_size, size_bytes, dest)
 
     url = f"{_GROK_ASSETS_DL_BASE}/{key}"
-    dl_headers = _headers(settings)
-    dl_headers["Referer"] = "https://grok.com/"
-    connector = aiohttp.TCPConnector(ssl=False)
-    async with aiohttp.ClientSession(connector=connector) as sess:
+    async with AsyncSession(**_session_kwargs(settings)) as sess:
         try:
-            async with sess.get(url, headers=dl_headers, timeout=aiohttp.ClientTimeout(total=120.0)) as resp:
-                if resp.status not in (200, 206):
-                    body = await resp.text()
-                    raise GrokClientError(
-                        f"Asset download returned {resp.status}", status_code=resp.status, body=body[:200]
-                    )
-                data = await resp.read()
+            resp = await sess.get(url, headers=_dl_headers(settings), timeout=120.0)
+            if resp.status_code not in (200, 206):
+                raise GrokClientError(
+                    f"Asset download returned {resp.status_code}",
+                    status_code=resp.status_code,
+                    body=resp.text[:200],
+                )
+            data = resp.content
         except GrokClientError:
             raise
         except Exception as exc:
             raise GrokClientError(f"Asset download failed: {exc}", status_code=502) from exc
 
-    if len(data) == 0:
+    if not data:
         raise GrokClientError("Asset download returned empty file", status_code=502, code="empty_file")
     dest.write_bytes(data)
     logger.info("grok file saved: %s (%d bytes)", dest, len(data))
-    return str(dest)
+    return str(dest), False

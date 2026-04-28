@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
+import re
 import secrets
 import sys
 import time
+import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -43,6 +47,8 @@ from .grok_client import (
     smoke_skills,
     stream_chat,
     stream_grok_asset,
+    chat_imagine,
+    query_rate_limits,
 )
 from .image_stream import ImageStreamWorker, StreamConfig
 from .models import get_model, list_models, model_to_openai
@@ -67,6 +73,7 @@ _TAG_VIDEO  = "视频生成"
 _TAG_QUOTA  = "额度查询"
 _TAG_LOGS   = "请求日志"
 _TAG_ADMIN  = "管理 & 配置"
+_TAG_FILES  = "Grok Files"
 
 _TAGS_META = [
     {"name": _TAG_OPENAI,  "description": "兼容 OpenAI SDK 的接口，可直接用现有客户端调用。认证：`Authorization: Bearer <api_key>`。"},
@@ -97,8 +104,13 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
         logger.warning("⚠️  api_key 使用默认值 'change-me'，请立即修改 data/config/mini.toml")
     ws_gateway.start(settings_store.get)
     task_queue.start_worker(ws_gateway, log_db=log_db)
+    log_db.reset_running_downloads()
+    log_db.reset_running_deletes()
     asyncio.create_task(_daily_cleanup())
     asyncio.create_task(_session_keeper_loop())
+    asyncio.create_task(_file_download_worker())
+    asyncio.create_task(_file_delete_worker())
+    asyncio.create_task(_files_auto_sync_loop())
     yield
     ws_gateway.stop()
     task_queue.stop_worker()
@@ -130,6 +142,202 @@ app = FastAPI(
 )
 _STATIC_DIR = Path(__file__).parent / "static"
 _STATIC_DIR.mkdir(exist_ok=True)
+
+
+_FILE_DL_CONCURRENCY = 3
+_file_dl_wake = asyncio.Event()
+_FILE_DEL_CONCURRENCY = 2
+_file_del_wake = asyncio.Event()
+
+
+async def _file_download_worker() -> None:
+    """后台持续消费 file_downloads 队列，并发 _FILE_DL_CONCURRENCY 个下载。"""
+    import asyncio
+    logger.info("file download worker started")
+    while True:
+        jobs = log_db.claim_pending_downloads(_FILE_DL_CONCURRENCY)
+        if not jobs:
+            _file_dl_wake.clear()
+            try:
+                # 10s 自动唤醒一次，让 retrying 到期的任务能被领走
+                await asyncio.wait_for(_file_dl_wake.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                pass
+            continue
+
+        async def _do(job: dict) -> None:
+            settings = settings_store.get()
+            try:
+                path, _ = await save_grok_asset_local(
+                    settings, job["asset_key"], job["filename"], job["size_bytes"]
+                )
+                log_db.finish_download(job["id"], path=path)
+                # 同步标记 grok_assets 表中的下载状态（filename 可能含或不含扩展名）
+                fn = job["filename"]
+                asset_id = fn.rsplit(".", 1)[0] if "." in fn else fn
+                if asset_id:
+                    log_db.mark_asset_downloaded(asset_id, path)
+            except Exception as exc:
+                err_str = str(exc)
+                fn = job["filename"]
+                asset_id = fn.rsplit(".", 1)[0] if "." in fn else fn
+                # 404 / 410 → 立即永久失败
+                hard_perm = ("returned 404" in err_str or "returned 410" in err_str)
+                # 空 body → 视 asset 年龄而定：>24h 视为永久；<24h 让它继续重试（CDN 可能还在生成）
+                empty_err = ("empty_file" in err_str or "Asset download returned empty file" in err_str)
+                permanent = hard_perm
+                if empty_err and not permanent:
+                    # 查 asset 创建时间（直接 SQL 比 list_grok_assets_db 快）
+                    try:
+                        with log_db._connect() as _c:
+                            r = _c.execute("SELECT create_time FROM grok_assets WHERE asset_id=?", (asset_id,)).fetchone()
+                            ct = r["create_time"] if r else ""
+                        if ct:
+                            from datetime import datetime, timezone
+                            try:
+                                # Grok 时间格式: 2026-04-28T03:41:08.260755Z
+                                dt = datetime.fromisoformat(ct.replace("Z", "+00:00"))
+                                age_hours = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+                                if age_hours > 24:
+                                    permanent = True  # 老 asset + 空 body → 已确认丢失
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                log_db.finish_download(
+                    job["id"], error=err_str, permanent=permanent,
+                    max_attempts=8 if empty_err else 5,  # 空 body 给更多机会
+                    base_backoff_seconds=120.0 if empty_err else 30.0,  # 空 body 退避更长
+                )
+                if permanent and asset_id:
+                    log_db.mark_asset_unavailable(asset_id, reason=err_str[:200])
+
+        await asyncio.gather(*[_do(j) for j in jobs])
+
+
+_auto_sync_state: dict[str, Any] = {
+    "running": False,           # 当前是否正在执行某一轮
+    "last_run_at": 0.0,
+    "last_finished_at": 0.0,
+    "last_pages_scanned": 0,
+    "last_queued_count": 0,
+    "last_error": "",
+    "next_run_at": 0.0,         # 下一轮计划开始时间戳
+    "total_runs": 0,
+    "total_queued_lifetime": 0,
+}
+_auto_sync_kick = asyncio.Event()  # 手动触发立即同步
+
+
+async def _file_delete_worker() -> None:
+    """后台并发 _FILE_DEL_CONCURRENCY 个云端删除任务。"""
+    logger.info("file delete worker started")
+    while True:
+        jobs = log_db.claim_pending_deletes(_FILE_DEL_CONCURRENCY)
+        if not jobs:
+            _file_del_wake.clear()
+            try:
+                await asyncio.wait_for(_file_del_wake.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                pass
+            continue
+
+        async def _do(job: dict) -> None:
+            settings = settings_store.get()
+            aid = job["asset_id"]
+            try:
+                confirmed = await delete_grok_asset(settings, aid)
+                # confirmed=True：API 200 → 写 cloud_deleted_at；
+                # confirmed=False：404/410 → 不写（避免误标），让全量同步校准
+                if confirmed:
+                    log_db.mark_asset_cloud_deleted(aid)
+                log_db.finish_delete(job["id"])
+            except Exception as exc:
+                log_db.finish_delete(job["id"], error=str(exc))
+
+        await asyncio.gather(*[_do(j) for j in jobs])
+
+
+async def _files_auto_sync_loop() -> None:
+    """常驻后台：根据 settings.files_auto_sync 周期性把未下载资产入下载队列。"""
+    logger.info("files auto-sync loop started")
+    while True:
+        try:
+            kicked = _auto_sync_kick.is_set()
+            settings = settings_store.get()
+            if not settings.files_auto_sync and not kicked:
+                _auto_sync_state["next_run_at"] = 0.0
+                # 等待手动 kick 或 60s 重新检查开关
+                try:
+                    await asyncio.wait_for(_auto_sync_kick.wait(), timeout=60)
+                except asyncio.TimeoutError:
+                    pass
+                continue
+            if kicked:
+                _auto_sync_kick.clear()
+            interval = max(60, int(settings.files_auto_sync_interval_seconds or 300))
+            _auto_sync_state.update({
+                "running": True, "last_run_at": time.time(),
+                "last_pages_scanned": 0, "last_queued_count": 0, "last_error": "",
+            })
+            page_token = ""
+            queued_ids: list[str] = []
+            pages = 0
+            try:
+                for _ in range(5):
+                    data = await list_grok_assets(settings, page_token=page_token, page_size=100)
+                    assets = data.get("assets", []) or []
+                    if not assets:
+                        break
+                    log_db.upsert_grok_assets(assets)  # auto-sync: 不消费 revived 计数
+                    downloaded = log_db.get_downloaded_asset_ids()
+                    unavailable = log_db.get_unavailable_asset_ids()
+                    jobs = []
+                    ext_map = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
+                               "image/gif": ".gif", "video/mp4": ".mp4", "video/webm": ".webm"}
+                    for a in assets:
+                        aid = a.get("assetId") or ""
+                        if not aid or aid in downloaded or aid in unavailable:
+                            continue
+                        mime = a.get("mimeType", "")
+                        ext = ext_map.get(mime) or (("." + mime.split("/")[1]) if mime else "")
+                        jobs.append({
+                            "id": str(uuid.uuid4()),
+                            "asset_key": a.get("key", ""),
+                            "filename": aid + ext,
+                            "size_bytes": int(a.get("sizeBytes") or 0),
+                            "created_at": time.time(),
+                        })
+                        queued_ids.append(aid)
+                    if jobs:
+                        log_db.add_file_downloads(jobs)
+                        _file_dl_wake.set()
+                    pages += 1
+                    _auto_sync_state["last_pages_scanned"] = pages
+                    _auto_sync_state["last_queued_count"] = len(queued_ids)
+                    page_token = data.get("nextPageToken", "") or ""
+                    if not page_token:
+                        break
+            except Exception as exc:
+                _auto_sync_state["last_error"] = str(exc)
+                logger.warning("auto sync: list failed: %s", exc)
+
+            _auto_sync_state.update({
+                "running": False,
+                "last_finished_at": time.time(),
+                "next_run_at": time.time() + interval,
+                "total_runs": _auto_sync_state["total_runs"] + 1,
+                "total_queued_lifetime": _auto_sync_state["total_queued_lifetime"] + len(queued_ids),
+            })
+            if queued_ids:
+                logger.info("auto sync: queued %d new files for download", len(queued_ids))
+            await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            _auto_sync_state.update({"running": False, "last_error": str(exc)})
+            logger.warning("auto sync loop error: %s", exc)
+            await asyncio.sleep(60)
 
 
 async def _daily_cleanup() -> None:
@@ -198,65 +406,89 @@ async def _session_keeper_loop() -> None:
     import asyncio
     import random
     await asyncio.sleep(5)
+    # 单轮失败后的快速重试退避：30s, 60s, 120s, 240s（共 4 次），全失败才进入下一个主周期
+    _RETRY_DELAYS = [30, 60, 120, 240]
+
+    async def _do_refresh_once(settings) -> bool:
+        """单次 FlareSolverr 刷新尝试，成功 True，失败 False。"""
+        try:
+            fresh_cookies, ua = await flaresolverr_refresh_cf(
+                settings.flaresolverr_url,
+                existing_cookies=None,
+                grok_proxy=settings.grok_proxy,
+                flaresolverr_proxy_url=settings.flaresolverr_proxy_url,
+            )
+            if not fresh_cookies:
+                logger.warning("session_keeper: FlareSolverr returned empty cookies")
+                log_db.log_system(event_type="cf_refresh", status="error", detail="empty cookies returned")
+                return False
+            cf_only_fresh = {
+                k: v for k, v in fresh_cookies.items()
+                if k in ("cf_clearance", "__cf_bm") and v
+            }
+            merged = merge_grok_cookies(settings.grok_cookie, cf_only_fresh)
+            patch: dict[str, object] = {"grok_cookie": merged}
+            if ua:
+                patch["grok_user_agent"] = ua
+                import re
+                m = re.search(r"Chrome/(\d+)", ua)
+                if m:
+                    major = m.group(1)
+                    target_browser = f"chrome{major}"
+                    from curl_cffi.requests.impersonate import BrowserType
+                    if any(b.name == target_browser for b in BrowserType):
+                        patch["grok_browser"] = target_browser
+            settings_store.update(**patch)
+            merged_names = list(parse_cookie_string(merged).keys())
+            logger.info(
+                "session_keeper: refreshed via FlareSolverr (cf_clearance=%s, sso=%s, cookies=%d)",
+                "yes" if "cf_clearance" in cf_only_fresh else "no",
+                "yes" if "sso" in merged_names else "no",
+                len(merged_names),
+            )
+            log_db.log_system(
+                event_type="cf_refresh", status="success",
+                detail=f"cf_clearance={'yes' if 'cf_clearance' in cf_only_fresh else 'no'} "
+                       f"sso={'yes' if 'sso' in merged_names else 'no'} cookies={len(merged_names)}",
+            )
+            return True
+        except Exception as exc:
+            logger.warning("session_keeper: FlareSolverr failed (%s)", exc)
+            log_db.log_system(event_type="cf_refresh", status="error", detail=str(exc))
+            return False
+
     while True:
         settings = settings_store.get()
         fs_url = settings.flaresolverr_url
         if fs_url:
-            try:
-                # 完全不传现有 cookie 给 FlareSolverr：
-                # 1. 传 sso 会触发服务端清除登录态（FlareSolverr 浏览器 IP/指纹与原浏览器不同）
-                # 2. 传旧 cf_clearance 时 FlareSolverr 看到"已通过 CF"，不会发起新挑战，
-                #    返回的还是旧 cookie（CF 绑定 Chrome 真实指纹，curl_cffi 用不了）
-                # 让 FlareSolverr 在干净浏览器里重新解挑战，颁发与本次请求 IP/UA 配套的新 cf_clearance。
-                fresh_cookies, ua = await flaresolverr_refresh_cf(
-                    fs_url,
-                    existing_cookies=None,
-                    grok_proxy=settings.grok_proxy,
-                    flaresolverr_proxy_url=settings.flaresolverr_proxy_url,
-                )
-                if fresh_cookies:
-                    # 只合并 CF 相关 cookie。FlareSolverr 的匿名 Chrome 还会返回
-                    # x-anonuserid / x-challenge / x-signature / OptanonConsent / mp_*
-                    # 等"它自己 session"的元数据，与用户的登录态(x-userid/sso) 冲突，
-                    # 服务端会拒绝请求。
-                    cf_only_fresh = {
-                        k: v for k, v in fresh_cookies.items()
-                        if k in ("cf_clearance", "__cf_bm") and v
-                    }
-                    merged = merge_grok_cookies(settings.grok_cookie, cf_only_fresh)
-                    patch: dict[str, object] = {"grok_cookie": merged}
-                    if ua:
-                        patch["grok_user_agent"] = ua
-                        # 同步 grok_browser 与 UA 主版本号匹配，否则 curl_cffi 指纹与
-                        # FlareSolverr 颁发 cf_clearance 时的 Chrome 指纹不一致 → CF 拒绝
-                        import re
-                        m = re.search(r"Chrome/(\d+)", ua)
-                        if m:
-                            major = m.group(1)
-                            target_browser = f"chrome{major}"
-                            # 只在 curl_cffi 实际支持的版本范围内更新（避免 fallback 失败）
-                            from curl_cffi.requests.impersonate import BrowserType
-                            if any(b.name == target_browser for b in BrowserType):
-                                patch["grok_browser"] = target_browser
-                    settings_store.update(**patch)
-                    merged_names = list(parse_cookie_string(merged).keys())
-                    logger.info(
-                        "session_keeper: refreshed via FlareSolverr (cf_clearance=%s, sso=%s, cookies=%d)",
-                        "yes" if "cf_clearance" in cf_only_fresh else "no",
-                        "yes" if "sso" in merged_names else "no",
-                        len(merged_names),
+            ok = await _do_refresh_once(settings)
+            # 失败 → 指数退避快速重试
+            if not ok:
+                for i, delay in enumerate(_RETRY_DELAYS, start=1):
+                    logger.info("session_keeper: cf_refresh retry %d/%d in %ds",
+                                i, len(_RETRY_DELAYS), delay)
+                    log_db.log_system(
+                        event_type="cf_refresh_retry", status="info",
+                        detail=f"attempt={i}/{len(_RETRY_DELAYS)} delay={delay}s",
+                    )
+                    await asyncio.sleep(delay)
+                    settings = settings_store.get()  # 期间用户可能改了配置
+                    if not settings.flaresolverr_url:
+                        break
+                    if await _do_refresh_once(settings):
+                        ok = True
+                        break
+                if not ok:
+                    logger.warning(
+                        "session_keeper: all %d cf_refresh attempts failed, fallback to heartbeat",
+                        len(_RETRY_DELAYS) + 1,
                     )
                     log_db.log_system(
-                        event_type="cf_refresh",
-                        status="success",
-                        detail=f"cf_clearance={'yes' if 'cf_clearance' in cf_only_fresh else 'no'} "
-                               f"sso={'yes' if 'sso' in merged_names else 'no'} cookies={len(merged_names)}",
+                        event_type="cf_refresh", status="error",
+                        detail=f"all {len(_RETRY_DELAYS) + 1} attempts failed; fallback to heartbeat",
                     )
-            except Exception as exc:
-                logger.warning("session_keeper: FlareSolverr failed (%s)", exc)
-                log_db.log_system(event_type="cf_refresh", status="error", detail=str(exc))
-                if settings.grok_cookie:
-                    await _heartbeat_once(settings)
+                    if settings.grok_cookie:
+                        await _heartbeat_once(settings)
         elif settings.grok_cookie:
             await _heartbeat_once(settings)
         interval = _KEEPER_BASE + random.randint(-_KEEPER_JITTER, _KEEPER_JITTER)
@@ -399,6 +631,360 @@ async def serve_video(session_id: str, filename: str) -> FileResponse:
     return FileResponse(str(path), media_type=media_type)
 
 
+@app.get("/v1/grok-files/", tags=[_TAG_FILES], summary="列出本地已下载 Grok 文件（DB 优先，filesystem 兜底）",
+         dependencies=[Depends(_require_api_key)])
+async def list_local_grok_files() -> JSONResponse:
+    """返回已下载 asset_id 列表（去扩展名）。"""
+    from .grok_client import GROK_FILES_DIR
+    db_ids = log_db.get_downloaded_asset_ids()
+    if db_ids:
+        return JSONResponse({"files": list(db_ids)})
+    # 兜底：DB 为空时扫目录
+    GROK_FILES_DIR.mkdir(parents=True, exist_ok=True)
+    ids = [
+        f.stem for f in GROK_FILES_DIR.iterdir()
+        if f.is_file() and not f.name.startswith(".")
+    ]
+    return JSONResponse({"files": ids})
+
+
+@app.get("/v1/grok-files/assets", tags=[_TAG_FILES], summary="从本地 DB 分页查询资产元数据",
+         dependencies=[Depends(_require_api_key)])
+async def list_db_assets(
+    page: int = 0,
+    page_size: int = 50,
+    only_undownloaded: bool = False,
+) -> JSONResponse:
+    page_size = min(max(page_size, 1), 200)
+    offset = max(page, 0) * page_size
+    assets = log_db.list_grok_assets_db(
+        only_undownloaded=only_undownloaded, limit=page_size, offset=offset,
+    )
+    total = log_db.count_grok_assets(only_undownloaded=only_undownloaded)
+    return JSONResponse({
+        "assets": assets,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "has_more": offset + len(assets) < total,
+    })
+
+
+_sync_lock = asyncio.Lock()
+_sync_state: dict[str, Any] = {"running": False, "progress": 0, "total_pages": 0,
+                               "new_count": 0, "updated_count": 0,
+                               "revived_count": 0,            # 误标 cloud_deleted 但实际仍在云端 → 已纠正的数量
+                               "stale_deleted_count": 0,      # 同步结束后仍标 cloud_deleted 但实际仍在云端 → 已纠正的数量
+                               "scanned_asset_ids": 0,        # 本轮扫到的 asset_id 数（用于交叉校验）
+                               "started_at": 0.0,
+                               "finished_at": 0.0, "error": ""}
+
+
+@app.get("/v1/grok-files/sync/status", tags=[_TAG_FILES], summary="查询全量同步状态",
+         dependencies=[Depends(_require_api_key)])
+async def grok_sync_status() -> JSONResponse:
+    return JSONResponse(_sync_state)
+
+
+class _AutoSyncToggle(BaseModel):
+    enabled: bool
+    interval_seconds: int = 300
+
+
+@app.get("/v1/grok-files/auto-sync", tags=[_TAG_FILES], summary="查询自动同步开关 + 运行状态",
+         dependencies=[Depends(_require_api_key)])
+async def get_auto_sync_status() -> JSONResponse:
+    s = settings_store.get()
+    # 下载队列概况（最近 1h 各状态计数）
+    overview = log_db.get_dl_queue_overview(since_ts=time.time() - 3600)
+    counts = {
+        "pending":  overview.get("pending", 0),
+        "running":  overview.get("running", 0),
+        "retrying": overview.get("retrying", 0),
+        "done":     overview.get("done", 0),
+        "failed":   overview.get("failed", 0),
+    }
+    return JSONResponse({
+        "enabled": s.files_auto_sync,
+        "interval_seconds": s.files_auto_sync_interval_seconds,
+        "state": _auto_sync_state,
+        "download_queue_recent": counts,
+    })
+
+
+@app.post("/v1/grok-files/auto-sync", tags=[_TAG_FILES], summary="设置自动同步开关（持久化到配置）",
+          dependencies=[Depends(_require_api_key)])
+async def set_auto_sync(req: _AutoSyncToggle) -> JSONResponse:
+    interval = max(60, int(req.interval_seconds or 300))
+    new = settings_store.update(files_auto_sync=bool(req.enabled), files_auto_sync_interval_seconds=interval)
+    return JSONResponse({"enabled": new.files_auto_sync, "interval_seconds": new.files_auto_sync_interval_seconds})
+
+
+@app.post("/v1/grok-files/sync-now", tags=[_TAG_FILES],
+          summary="立即触发：把 DB 中所有未下载资产批量入下载队列",
+          dependencies=[Depends(_require_api_key)])
+async def grok_sync_now() -> JSONResponse:
+    """从本地 DB 读取所有未下载且未在云端删除的资产，批量入队。"""
+    rows = log_db.list_grok_assets_db(only_undownloaded=True, limit=100000, offset=0)
+    if not rows:
+        # 唤醒后台 worker 顺带刷一次（DB 可能还没 populated）
+        _auto_sync_kick.set()
+        return JSONResponse({"queued": 0, "message": "DB 中暂无未下载资产；已唤醒后台扫描"})
+    ext_map = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
+               "image/gif": ".gif", "video/mp4": ".mp4", "video/webm": ".webm"}
+    jobs = []
+    for a in rows:
+        # 跳过已被云端删除的（虽然 DB 还在）
+        if a.get("cloud_deleted_at"):
+            continue
+        aid = a.get("assetId") or ""
+        if not aid:
+            continue
+        mime = a.get("mimeType", "")
+        ext = ext_map.get(mime) or (("." + mime.split("/")[1]) if mime else "")
+        jobs.append({
+            "id": str(uuid.uuid4()),
+            "asset_key": a.get("key", ""),
+            "filename": aid + ext,
+            "size_bytes": int(a.get("sizeBytes") or 0),
+            "created_at": time.time(),
+        })
+    if jobs:
+        log_db.add_file_downloads(jobs)
+        _file_dl_wake.set()
+    # 同时 kick 一次 sync loop，让它检查云端是否有 DB 没缓存的新资产
+    _auto_sync_kick.set()
+    return JSONResponse({"queued": len(jobs), "scanned_assets": len(rows)})
+
+
+@app.post("/v1/grok-files/sync", tags=[_TAG_FILES], summary="启动全量同步：拉取所有 Grok Files API 页 → 入库",
+          dependencies=[Depends(_require_api_key)])
+async def grok_full_sync(settings: Annotated[Settings, Depends(_settings)]) -> JSONResponse:
+    if _sync_state["running"]:
+        raise HTTPException(409, "Sync already running")
+
+    async def _run() -> None:
+        async with _sync_lock:
+            _sync_state.update({
+                "running": True, "progress": 0, "total_pages": 0,
+                "new_count": 0, "updated_count": 0,
+                "revived_count": 0, "stale_deleted_count": 0, "scanned_asset_ids": 0,
+                "started_at": time.time(), "finished_at": 0.0, "error": "",
+            })
+            seen_ids: set[str] = set()
+            try:
+                page_token = ""
+                pages = 0
+                MAX_PAGES = 200  # 安全上限：~10000 个 asset
+                while pages < MAX_PAGES:
+                    data = await list_grok_assets(settings, page_token=page_token, page_size=100)
+                    assets = data.get("assets", []) or []
+                    if not assets:
+                        break
+                    new_n, upd_n, rev_n = log_db.upsert_grok_assets(assets)
+                    _sync_state["new_count"] += new_n
+                    _sync_state["updated_count"] += upd_n
+                    _sync_state["revived_count"] += rev_n
+                    for a in assets:
+                        aid = a.get("assetId") or ""
+                        if aid:
+                            seen_ids.add(aid)
+                    pages += 1
+                    _sync_state["progress"] = pages
+                    page_token = data.get("nextPageToken", "") or ""
+                    if not page_token:
+                        break
+                _sync_state["total_pages"] = pages
+                _sync_state["scanned_asset_ids"] = len(seen_ids)
+                # 跑完一遍全量后，DB 里仍标 cloud_deleted_at 的若出现在本轮 listing → 之前误标，统一清空
+                # 注意：upsert_grok_assets 已经在每页清掉 cloud_deleted_at；这里做兜底校验防止任何漏网
+                if seen_ids:
+                    try:
+                        ids_list = list(seen_ids)
+                        BATCH = 500  # SQLite 变量上限保护
+                        stale_total = 0
+                        with log_db._connect() as conn:
+                            for i in range(0, len(ids_list), BATCH):
+                                chunk = ids_list[i:i + BATCH]
+                                ph = ",".join("?" * len(chunk))
+                                cur = conn.execute(
+                                    f"SELECT COUNT(*) FROM grok_assets"
+                                    f" WHERE cloud_deleted_at IS NOT NULL AND asset_id IN ({ph})",
+                                    chunk,
+                                )
+                                n = cur.fetchone()[0] or 0
+                                if n:
+                                    conn.execute(
+                                        f"UPDATE grok_assets SET cloud_deleted_at=NULL"
+                                        f" WHERE cloud_deleted_at IS NOT NULL AND asset_id IN ({ph})",
+                                        chunk,
+                                    )
+                                stale_total += n
+                            if stale_total:
+                                logger.info("full sync: cleared cloud_deleted_at on %d stale records", stale_total)
+                            _sync_state["stale_deleted_count"] = stale_total
+                    except Exception as exc:
+                        logger.warning("full sync stale-deleted reconcile failed: %s", exc)
+            except Exception as exc:
+                _sync_state["error"] = str(exc)
+                logger.exception("grok full sync failed")
+            finally:
+                _sync_state["running"] = False
+                _sync_state["finished_at"] = time.time()
+
+    asyncio.create_task(_run())
+    return JSONResponse({"started": True})
+
+
+class _DlQueueItem(BaseModel):
+    asset_key: str
+    filename: str
+    size_bytes: int = 0
+
+
+# 注意：以下两个 /downloads 路由必须在 /{filename} 之前注册，否则会被参数路由拦截
+class _DeleteBatch(BaseModel):
+    asset_ids: list[str]
+
+
+@app.post("/v1/grok-files/deletes", tags=[_TAG_FILES],
+          summary="提交批量云端删除到后台队列（并发上限 2）",
+          dependencies=[Depends(_require_api_key)])
+async def queue_file_deletes(req: _DeleteBatch) -> JSONResponse:
+    n = log_db.add_file_deletes(req.asset_ids or [])
+    if n > 0:
+        _file_del_wake.set()
+    return JSONResponse({"queued": n})
+
+
+@app.post("/v1/grok-files/wipe-cloud", tags=[_TAG_FILES],
+          summary="⚠️ 清空所有云端文件（不删本地）",
+          description=(
+              "把 DB 中所有 cloud_deleted_at IS NULL 的 asset_id 全部入删除队列。\n"
+              "**只删云端，本地已下载文件保留**。两次拟态框确认后由前端调用。"
+          ),
+          dependencies=[Depends(_require_api_key)])
+async def wipe_cloud() -> JSONResponse:
+    try:
+        with log_db._connect() as conn:
+            rows = conn.execute(
+                "SELECT asset_id FROM grok_assets"
+                " WHERE cloud_deleted_at IS NULL AND asset_id IS NOT NULL AND asset_id != ''"
+            ).fetchall()
+            ids = [r[0] for r in rows]
+    except Exception as exc:
+        return _error_response(f"DB query failed: {exc}", 500)
+    if not ids:
+        return JSONResponse({"queued": 0, "message": "DB 中无可删除的云端 asset"})
+    n = log_db.add_file_deletes(ids)
+    if n > 0:
+        _file_del_wake.set()
+    return JSONResponse({"queued": n, "total_assets": len(ids)})
+
+
+@app.get("/v1/grok-files/deletes", tags=[_TAG_FILES], summary="查询删除队列",
+         description=(
+             "查询 file_deletes 状态。两种用法：\n"
+             "- `?since=<ts>`：返回该时间戳之后的任务（LIMIT 500，按 created_at 倒序）\n"
+             "- `?asset_ids=a,b,c`（逗号分隔）：精确按 asset_id 查每个的最新一条状态\n"
+             "  传 asset_ids 时不受 LIMIT 影响，前端轮询用这种方式避免一次大批入队后被截断。"
+         ),
+         dependencies=[Depends(_require_api_key)])
+async def list_file_deletes(since: float = 0.0, asset_ids: str = "") -> JSONResponse:
+    try:
+        with log_db._connect() as conn:
+            if asset_ids:
+                ids = [s.strip() for s in asset_ids.split(",") if s.strip()]
+                if not ids:
+                    return JSONResponse({"deletes": []})
+                # 每个 asset_id 取 created_at 最新一行（多次入队场景下也准确）
+                BATCH = 400
+                out: list[dict] = []
+                for i in range(0, len(ids), BATCH):
+                    chunk = ids[i:i + BATCH]
+                    ph = ",".join("?" * len(chunk))
+                    rows = conn.execute(
+                        f"SELECT t.* FROM file_deletes t"
+                        f" JOIN (SELECT asset_id, MAX(created_at) mx FROM file_deletes"
+                        f"        WHERE asset_id IN ({ph}) GROUP BY asset_id) g"
+                        f"   ON t.asset_id=g.asset_id AND t.created_at=g.mx",
+                        chunk,
+                    ).fetchall()
+                    out.extend(dict(r) for r in rows)
+                return JSONResponse({"deletes": out})
+            rows = conn.execute(
+                "SELECT * FROM file_deletes WHERE created_at>=?"
+                " ORDER BY created_at DESC LIMIT 500", (since,)
+            ).fetchall()
+            return JSONResponse({"deletes": [dict(r) for r in rows]})
+    except Exception:
+        return JSONResponse({"deletes": []})
+
+
+@app.post("/v1/grok-files/downloads", tags=[_TAG_FILES], summary="提交批量下载到后台队列",
+          dependencies=[Depends(_require_api_key)])
+async def queue_file_downloads(items: list[_DlQueueItem]) -> JSONResponse:
+    if not items:
+        raise HTTPException(400, "No items provided")
+    jobs = [
+        {
+            "id": str(uuid.uuid4()),
+            "asset_key": it.asset_key,
+            "filename": it.filename,
+            "size_bytes": it.size_bytes,
+            "created_at": time.time(),
+        }
+        for it in items
+    ]
+    log_db.add_file_downloads(jobs)
+    _file_dl_wake.set()
+    return JSONResponse({"queued": len(jobs), "ids": [j["id"] for j in jobs]})
+
+
+@app.get("/v1/grok-files/downloads", tags=[_TAG_FILES], summary="查询下载队列状态",
+         dependencies=[Depends(_require_api_key)])
+async def list_file_downloads(since: float = 0.0) -> JSONResponse:
+    jobs = log_db.list_file_downloads(since_ts=since)
+    return JSONResponse({"downloads": jobs})
+
+
+@app.delete("/v1/grok-files/{filename}", tags=[_TAG_FILES],
+            summary="删除本地已下载的 Grok 文件",
+            dependencies=[Depends(_require_api_key)])
+async def delete_local_grok_file(filename: str) -> JSONResponse:
+    from .grok_client import GROK_FILES_DIR
+    safe_fn = Path(filename).name
+    path = GROK_FILES_DIR / safe_fn
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        path.unlink()
+        # 同步清掉 DB 里的 downloaded 标记
+        asset_id = safe_fn.rsplit(".", 1)[0] if "." in safe_fn else safe_fn
+        try:
+            with log_db._connect() as conn:
+                conn.execute(
+                    "UPDATE grok_assets SET local_path='', downloaded_at=NULL WHERE asset_id=?",
+                    (asset_id,),
+                )
+        except Exception:
+            pass
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {exc}") from exc
+    return JSONResponse({"ok": True, "filename": safe_fn})
+
+
+@app.get("/v1/grok-files/{filename}", tags=[_TAG_FILES],
+         summary="读取本地 Grok 文件（无需认证，路径含 UUID）")
+async def serve_grok_file(filename: str) -> FileResponse:
+    from .grok_client import GROK_FILES_DIR
+    safe_fn = Path(filename).name
+    path = GROK_FILES_DIR / safe_fn
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    return FileResponse(str(path))
+
+
 @app.post("/v1/videos/generate", tags=[_TAG_VIDEO], summary="提交视频生成任务",
           description=(
               "调用 Grok `POST /rest/media/post/create` 提交视频生成，立即返回 `video_id`。\n\n"
@@ -488,7 +1074,7 @@ async def video_status(
         media_url = await get_video_link(settings, video_id)
     except GrokClientError as exc:
         return _error_response(str(exc), exc.status_code, code=exc.code or "upstream_error")
-    except Exception as exc:
+    except Exception:
         logger.exception("video status check failed")
         return _error_response("Internal server error", 500)
     if media_url:
@@ -707,10 +1293,11 @@ async def stream_start(req: ImageStreamStartRequest) -> JSONResponse:
         size=req.size,
         interval_seconds=req.interval_seconds,
         max_rounds=req.max_rounds,
+        max_images=req.max_images,
         enable_pro=spec.enable_pro,
         image_data=req.image_data or None,
     )
-    session_id = image_stream_worker.start(ws_gateway, cfg, log_db=log_db)
+    session_id = image_stream_worker.start(ws_gateway, cfg, log_db=log_db, task_queue=task_queue)
     return JSONResponse({
         "ok": True,
         "message": "stream started",
@@ -772,6 +1359,7 @@ async def task_add(
         aspect_ratio=resolve_aspect_ratio(req.size),
         enable_pro=spec.enable_pro,
         interval_seconds=req.interval_seconds,
+        origin=req.origin or "queue",
     )
     return JSONResponse(task.to_dict(), status_code=201)
 
@@ -796,6 +1384,78 @@ async def task_delete(task_id: str) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+@app.post("/v1/images/tasks/bulk/pause", tags=[_TAG_TASKS], summary="批量暂停所有 running/pending 任务",
+          dependencies=[Depends(_require_api_key)])
+async def task_bulk_pause() -> JSONResponse:
+    n = 0
+    for t in list(task_queue.list_tasks()):
+        if t.get("kind") == "stream":
+            continue
+        if t.get("status") in ("running", "pending"):
+            if await task_queue.pause_task(t["id"]):
+                n += 1
+    return JSONResponse({"paused": n})
+
+
+@app.post("/v1/images/tasks/bulk/retry-failed", tags=[_TAG_TASKS],
+          summary="只重试 failed 状态的任务（不动 cancelled / paused）",
+          dependencies=[Depends(_require_api_key)])
+async def task_bulk_retry_failed() -> JSONResponse:
+    n = 0
+    for t in list(task_queue.list_tasks()):
+        if t.get("kind") == "stream":
+            continue
+        if t.get("status") == "failed":
+            if await task_queue.retry_task(t["id"]):
+                n += 1
+    return JSONResponse({"retried": n})
+
+
+@app.post("/v1/images/tasks/bulk/best-effort", tags=[_TAG_TASKS],
+          summary="对所有满足条件的 failed 任务批量启用尽力模式",
+          description=(
+              "条件：status=failed 且（generated_count >= 2 或 generated_count*5 >= target_count）。"
+              "保留已有进度，允许总尝试数追加 target_count*5 上限。"
+          ),
+          dependencies=[Depends(_require_api_key)])
+async def task_bulk_best_effort() -> JSONResponse:
+    n = 0
+    for t in list(task_queue.list_tasks()):
+        if t.get("kind") == "stream":
+            continue
+        status = t.get("status")
+        gen = int(t.get("generated_count") or 0)
+        tgt = int(t.get("target_count") or 0)
+        partial = gen >= 2 or (tgt > 0 and gen * 5 >= tgt)
+        eligible = (
+            (status == "failed" and partial)
+            or (status == "done" and gen < tgt and partial and int(t.get("attempt_cap") or 0) == 0)
+        )
+        if not eligible:
+            continue
+        if await task_queue.enable_best_effort(t["id"]):
+            n += 1
+    return JSONResponse({"enabled": n})
+
+
+@app.post("/v1/images/tasks/bulk/resume", tags=[_TAG_TASKS],
+          summary="批量恢复所有 paused/failed/cancelled 任务",
+          dependencies=[Depends(_require_api_key)])
+async def task_bulk_resume() -> JSONResponse:
+    n = 0
+    for t in list(task_queue.list_tasks()):
+        if t.get("kind") == "stream":
+            continue
+        st = t.get("status")
+        if st == "paused":
+            if await task_queue.resume_task(t["id"]):
+                n += 1
+        elif st in ("failed", "cancelled"):
+            if await task_queue.retry_task(t["id"]):
+                n += 1
+    return JSONResponse({"resumed": n})
+
+
 @app.post("/v1/images/tasks/{task_id}/pause", tags=[_TAG_TASKS], summary="暂停任务",
           description="暂停 running 或 pending 状态的任务。若任务正在生图，当前批次完成后停止。",
           dependencies=[Depends(_require_api_key)])
@@ -813,6 +1473,41 @@ async def task_resume(task_id: str) -> JSONResponse:
     ok = await task_queue.resume_task(task_id)
     if not ok:
         raise HTTPException(status_code=409, detail="Task cannot be resumed in its current state")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/v1/images/tasks/{task_id}/close", tags=[_TAG_TASKS],
+          summary="关闭 failed 任务（标为 done，保留错误信息）",
+          dependencies=[Depends(_require_api_key)])
+async def task_close(task_id: str) -> JSONResponse:
+    ok = await task_queue.close_task(task_id)
+    if not ok:
+        raise HTTPException(status_code=409, detail="Only failed tasks can be closed")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/v1/images/tasks/{task_id}/retry", tags=[_TAG_TASKS], summary="重试失败任务",
+          description="将 failed 状态的任务重置为 pending，清空失败计数重新入队。",
+          dependencies=[Depends(_require_api_key)])
+async def task_retry(task_id: str) -> JSONResponse:
+    ok = await task_queue.retry_task(task_id)
+    if not ok:
+        raise HTTPException(status_code=409, detail="Task cannot be retried (not in failed state)")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/v1/images/tasks/{task_id}/best-effort", tags=[_TAG_TASKS],
+          summary="对 failed 任务启用尽力模式（保留进度，再尝试 target×5 次）",
+          description=(
+              "对 failed 任务启用尽力模式：保留已有的成功/被审/失败计数，将任务重新入队，"
+              "允许总尝试次数追加 `target_count * 5` 上限。"
+              "提前达到 target 张成功 → done；耗尽 cap 也判定为 done（视为已尽力）。"
+          ),
+          dependencies=[Depends(_require_api_key)])
+async def task_best_effort(task_id: str) -> JSONResponse:
+    ok = await task_queue.enable_best_effort(task_id)
+    if not ok:
+        raise HTTPException(status_code=409, detail="Only failed tasks can enter best-effort mode")
     return JSONResponse({"ok": True})
 
 
@@ -838,8 +1533,11 @@ async def task_move(task_id: str, direction: Literal["up", "down"] = "up") -> JS
          dependencies=[Depends(_require_api_key)])
 async def sessions_list() -> JSONResponse:
     IMAGE_DIR.mkdir(parents=True, exist_ok=True)
-    # 从 DB 批量查 session_id → model 映射（每个 session 取第一条记录的 model）
+    # 从 DB 批量查 session_id → model 映射，以及错误次数和被审次数（关联 task_queue）
     model_map: dict[str, str] = {}
+    err_map: dict[str, int] = {}      # 该 session 在 image_logs 中 status='error' 的次数
+    moderated_map: dict[str, int] = {}  # 来自 task_queue.moderated_count
+    failed_count_map: dict[str, int] = {}  # 来自 task_queue.failed_count
     if log_db:
         try:
             with log_db._connect() as conn:
@@ -847,6 +1545,16 @@ async def sessions_list() -> JSONResponse:
                     "SELECT request_id, model FROM image_logs GROUP BY request_id"
                 ).fetchall()
                 model_map = {r[0]: r[1] for r in rows}
+                err_rows = conn.execute(
+                    "SELECT request_id, COUNT(*) FROM image_logs WHERE status='error' GROUP BY request_id"
+                ).fetchall()
+                err_map = {r[0]: r[1] for r in err_rows}
+                tq_rows = conn.execute(
+                    "SELECT session_id, moderated_count, failed_count FROM task_queue"
+                ).fetchall()
+                for r in tq_rows:
+                    moderated_map[r[0]] = r[1] or 0
+                    failed_count_map[r[0]] = r[2] or 0
         except Exception:
             pass
     sessions = []
@@ -877,8 +1585,27 @@ async def sessions_list() -> JSONResponse:
             "created_at": meta.get("created_at", d.stat().st_mtime),
             "image_count": len(images),
             "thumbnail": images[0].name if images else None,
+            "moderated_count": moderated_map.get(d.name, 0),
+            "failed_count": failed_count_map.get(d.name, 0) + err_map.get(d.name, 0),
         })
     return JSONResponse({"sessions": sessions, "total": len(sessions)})
+
+
+@app.delete("/v1/images/file/{session_id}/{filename}", tags=[_TAG_GALLERY],
+            summary="删除单张图片/视频文件",
+            description="物理删除指定 session 下的单个媒体文件（与 Files 删除逻辑一致）。",
+            dependencies=[Depends(_require_api_key)])
+async def image_file_delete(session_id: str, filename: str) -> JSONResponse:
+    safe_sid = Path(session_id).name
+    safe_fn = Path(filename).name
+    path = IMAGE_DIR / safe_sid / safe_fn
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+    try:
+        path.unlink()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Delete failed: {exc}") from exc
+    return JSONResponse({"ok": True, "session_id": safe_sid, "filename": safe_fn})
 
 
 @app.delete("/v1/images/sessions/{session_id}", tags=[_TAG_GALLERY], summary="删除 / 隐藏会话",
@@ -1011,6 +1738,125 @@ async def _fetch_quota(settings: Settings, mode_name: str = "auto") -> dict | No
         return None
 
 
+_CHAT_MODELS_FOR_QUOTA = [
+    # 用户面板要看的 chat model 名（实测 modelName 来源 web 端 rate-limits 请求体）
+    ("grok-420-computer-use-sa", "Grok 4 Computer Use"),
+]
+
+
+@app.get("/v1/quota/chat", tags=[_TAG_QUOTA], summary="查询 Chat 模型配额",
+         description="并发查询多个 chat 模型的 rate-limits（每 2h 窗口的剩余 query 次数）",
+         dependencies=[Depends(_require_api_key)])
+async def chat_quota(settings: Annotated[Settings, Depends(_settings)]) -> JSONResponse:
+    if not settings.grok_cookie:
+        return _error_response("GROK_COOKIE not configured", 400, code="missing_grok_cookie")
+    out = []
+    async def _one(model_id: str, label: str) -> dict:
+        try:
+            d = await query_rate_limits(settings, model_name=model_id)
+            remaining = int(d.get("remainingQueries") or 0)
+            total = int(d.get("totalQueries") or remaining)
+            window = int(d.get("windowSizeSeconds") or 7200)
+            used = max(total - remaining, 0)
+            pct = round(used / total * 100, 1) if total > 0 else 0.0
+            return {"model_id": model_id, "label": label, "remaining": remaining,
+                    "total": total, "used": used, "used_pct": pct, "window_seconds": window}
+        except Exception as exc:
+            return {"model_id": model_id, "label": label, "error": str(exc)}
+    out = await asyncio.gather(*[_one(m, l) for m, l in _CHAT_MODELS_FOR_QUOTA])
+    return JSONResponse({"chat_quotas": out})
+
+
+class _ChatImagineRequest(BaseModel):
+    prompt: str
+    image_count: int = 2
+    mode_id: str = "fast"  # grok 网页端实际使用 "fast"，不是 LLM 模型名
+    aspect_ratio: str = "1:1"  # 注入到 prompt 头部供 LLM 选 orientation
+
+
+@app.post("/v1/images/chat-imagine", tags=[_TAG_OPENAI],
+          summary="通过 Chat 端口让 LLM 改写 prompt 后生成图片（绕过严格审核）",
+          description=(
+              "POST 一个 prompt，Grok LLM 会自行改写成更安全的版本后生成图片。\n"
+              "- 比 imagine WS 直接调用慢（30-90s），但更不易被审核拦截\n"
+              "- imageGenerationCount 上限 4\n"
+              "- 失败会返回 `code:chat_no_image`（LLM 也拒绝了）"
+          ),
+          dependencies=[Depends(_require_api_key)])
+async def chat_imagine_endpoint(
+    req: _ChatImagineRequest,
+    settings: Annotated[Settings, Depends(_settings)],
+) -> JSONResponse:
+    if not req.prompt or not req.prompt.strip():
+        return _error_response("prompt is required", 400)
+    sess_id = str(uuid.uuid4())
+    t0 = time.monotonic()
+    summary = ""
+    try:
+        urls, summary = await chat_imagine(
+            settings, message=req.prompt, mode_id=req.mode_id,
+            image_count=req.image_count, aspect_ratio=req.aspect_ratio,
+        )
+    except GrokClientError as exc:
+        log_db.log_image(
+            request_id=sess_id, model=req.mode_id, prompt=req.prompt,
+            image_count=0, aspect_ratio="", source="chat-imagine",
+            status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+        )
+        return _error_response(str(exc), exc.status_code, code=exc.code or "upstream_error")
+    except Exception as exc:
+        logger.exception("chat-imagine failed")
+        log_db.log_image(
+            request_id=sess_id, model=req.mode_id, prompt=req.prompt,
+            image_count=0, aspect_ratio="", source="chat-imagine",
+            status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+        )
+        return _error_response("Internal server error", 500)
+    full = []
+    for u in urls:
+        if u.startswith("http"):
+            full.append(u)
+        else:
+            full.append(f"https://assets.grok.com/{u.lstrip('/')}")
+    # 落盘到 data/images/{sess_id}/，让"图库"能扫到这个 session
+    from .grok_client import _init_session as _grok_init_session, stream_grok_asset
+    saved_paths: list[str] = []
+    try:
+        sess_dir = _grok_init_session(
+            sess_id, prompt=req.prompt, source="chat-imagine", aspect_ratio="",
+        )
+        for idx, full_url in enumerate(full):
+            try:
+                m = re.search(r"assets\.grok\.com/(.+)$", full_url)
+                if not m:
+                    continue
+                key = m.group(1)
+                ext = os.path.splitext(key.split("/")[-1])[1] or ".jpg"
+                fn = f"chat-{idx:02d}{ext}"
+                fp = sess_dir / fn
+                _ct, gen = await stream_grok_asset(settings, key)
+                with open(fp, "wb") as f:
+                    async for chunk in gen:
+                        f.write(chunk)
+                saved_paths.append(f"{sess_id}/{fn}")
+            except Exception as save_exc:
+                logger.warning("chat-imagine save failed for %s: %s", full_url[:100], save_exc)
+    except Exception:
+        logger.exception("chat-imagine session_dir / download failed")
+    log_db.log_image(
+        request_id=sess_id, model=req.mode_id, prompt=req.prompt,
+        image_paths=saved_paths or full, image_count=len(full),
+        aspect_ratio="", source="chat-imagine",
+        status="success", duration_ms=int((time.monotonic() - t0) * 1000),
+    )
+    return JSONResponse({
+        "image_urls": full,
+        "image_count": len(full),
+        "session_id": sess_id,
+        "model_summary": summary,
+    })
+
+
 @app.get("/v1/quota", tags=[_TAG_QUOTA], summary="查询额度剩余",
          description=(
              "并发请求 Grok `/rest/rate-limits` 查询 auto / fast / think 三种模式的额度。\n\n"
@@ -1117,8 +1963,7 @@ async def update_config(
         patch["grok_user_agent"] = grok_user_agent.strip()
     if grok_browser.strip():
         patch["grok_browser"] = grok_browser.strip()
-    if grok_proxy.strip():
-        patch["grok_proxy"] = grok_proxy.strip()
+    patch["grok_proxy"] = grok_proxy.strip()  # 允许清空（空字符串=禁用代理）
     if flaresolverr_url.strip():
         patch["flaresolverr_url"] = flaresolverr_url.strip()
     if log_retention_days.strip():
@@ -1192,9 +2037,6 @@ async def admin_status(settings: Annotated[Settings, Depends(_settings)]) -> dic
 
 
 
-_TAG_FILES = "Grok Files"
-
-
 @app.get("/v1/grok/assets", tags=[_TAG_FILES], summary="列出 Grok Files",
          description="分页拉取 Grok 云端文件列表（图片/视频）。",
          dependencies=[Depends(_require_api_key)])
@@ -1205,6 +2047,9 @@ async def grok_assets_list(
 ) -> JSONResponse:
     try:
         data = await list_grok_assets(settings, page_token=page_token, page_size=min(page_size, 100))
+        # 顺便缓存到本地 DB（增量发现）
+        if data.get("assets"):
+            log_db.upsert_grok_assets(data["assets"])
         return JSONResponse(data)
     except GrokClientError as exc:
         return _error_response(str(exc), exc.status_code, code=exc.code or "upstream_error")
@@ -1214,15 +2059,17 @@ async def grok_assets_list(
 
 
 @app.post("/v1/grok/assets/{asset_id}/delete", tags=[_TAG_FILES], summary="删除 Grok File",
-          description="从 Grok 云端删除指定文件。",
+          description="从 Grok 云端删除指定文件（仅删云端，本地文件保留；DB 标记 cloud_deleted_at）。",
           dependencies=[Depends(_require_api_key)])
 async def grok_asset_delete(
     asset_id: str,
     settings: Annotated[Settings, Depends(_settings)],
 ) -> JSONResponse:
     try:
-        await delete_grok_asset(settings, asset_id)
-        return JSONResponse({"ok": True})
+        confirmed = await delete_grok_asset(settings, asset_id)
+        if confirmed:
+            log_db.mark_asset_cloud_deleted(asset_id)  # 仅在 API 200 后才标记
+        return JSONResponse({"ok": True, "cloud_deleted": confirmed})
     except GrokClientError as exc:
         return _error_response(str(exc), exc.status_code, code=exc.code or "upstream_error")
     except Exception:
@@ -1231,23 +2078,46 @@ async def grok_asset_delete(
 
 
 @app.get("/v1/grok/assets/download", tags=[_TAG_FILES], summary="下载 Grok File",
-         description="通过服务端代理从 assets.grok.com 下载文件，触发浏览器保存。",
-         dependencies=[Depends(_require_api_key)])
+         description=(
+             "通过服务端代理从 assets.grok.com 流式拉取文件。\n\n"
+             "支持两种鉴权方式：HTTP Header `Authorization: Bearer xxx`，或 query param `?api_key=xxx`（供 <img>/<video> 直接使用）。\n\n"
+             "查询参数：\n"
+             "- `inline=1`: 不触发浏览器下载（去掉 Content-Disposition），适合 <img src> 渐进式渲染。\n"
+             "- `inline=0`(默认): 加 Content-Disposition: attachment 触发浏览器保存。"
+         ))
 async def grok_asset_download(
     settings: Annotated[Settings, Depends(_settings)],
     key: str = "",
     filename: str = "file",
+    inline: int = 0,
+    api_key: str = "",
+    authorization: Annotated[str | None, Header()] = None,
 ) -> StreamingResponse:
+    # 双通道鉴权：Header 或 query
+    cfg_key = settings_store.get().api_key
+    if cfg_key:
+        token = ""
+        if authorization and authorization.lower().startswith("bearer "):
+            token = authorization[7:].strip()
+        elif api_key:
+            token = api_key.strip()
+        if not token or not secrets.compare_digest(token, cfg_key):
+            return JSONResponse({"error": {"message": "Invalid API key", "type": "authentication_error"}}, status_code=401)
+
     if not key:
         return JSONResponse({"error": "key is required"}, status_code=400)
+    # 防御：拒绝 prompt:// / scheme:// 等伪 key（LLM 透传产物或意外字符串）
+    if "://" in key or key.startswith("prompt:") or key.startswith("/"):
+        return JSONResponse({"error": "invalid key format"}, status_code=400)
     try:
         content_type, gen = await stream_grok_asset(settings, key)
-        safe_name = filename.replace('"', "_")
-        return StreamingResponse(
-            gen,
-            media_type=content_type,
-            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
-        )
+        headers: dict[str, str] = {
+            "Cache-Control": "private, max-age=43200",  # 12h，与 Grok CDN 一致
+        }
+        if not inline:
+            safe_name = filename.replace('"', "_")
+            headers["Content-Disposition"] = f'attachment; filename="{safe_name}"'
+        return StreamingResponse(gen, media_type=content_type, headers=headers)
     except GrokClientError as exc:
         return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
     except Exception:
@@ -1258,6 +2128,7 @@ async def grok_asset_download(
 class _SaveBatchItem(BaseModel):
     key: str
     filename: str
+    size_bytes: int = 0
 
 
 class _SaveBatchRequest(BaseModel):
@@ -1272,17 +2143,22 @@ async def grok_assets_save_local(
     settings: Annotated[Settings, Depends(_settings)],
 ) -> JSONResponse:
     saved = []
+    skipped = []
     errors = []
     for item in req.files:
         try:
-            path = await save_grok_asset_local(settings, item.key, item.filename)
-            saved.append({"key": item.key, "filename": item.filename, "path": path})
+            path, was_skipped = await save_grok_asset_local(settings, item.key, item.filename, item.size_bytes)
+            entry = {"key": item.key, "filename": item.filename, "path": path}
+            if was_skipped:
+                skipped.append(entry)
+            else:
+                saved.append(entry)
         except GrokClientError as exc:
             errors.append({"key": item.key, "filename": item.filename, "error": str(exc)})
-        except Exception as exc:
+        except Exception:
             logger.exception("save local asset failed: key=%s", item.key)
             errors.append({"key": item.key, "filename": item.filename, "error": "Internal server error"})
-    return JSONResponse({"saved": saved, "errors": errors})
+    return JSONResponse({"saved": saved, "skipped": skipped, "errors": errors})
 
 
 def run() -> None:
