@@ -7,6 +7,25 @@
 [![Docker](https://img.shields.io/badge/docker-multi--arch-blue?logo=docker)](#quick-start-docker)
 [![GHCR](https://img.shields.io/badge/ghcr.io-xjoker%2Fxgate-blue?logo=github)](https://github.com/xjoker/xGate/pkgs/container/xgate)
 
+<br/>
+
+![Dashboard](docs/screenshots/dashboard.png)
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/gen.png" alt="Generation"/><br/><b>生成</b> — 连续生图 + 实时 feed</td>
+    <td align="center"><img src="docs/screenshots/images.png" alt="Gallery"/><br/><b>图库</b> — 瀑布流 + PhotoSwipe 灯箱</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/chat.png" alt="Chat"/><br/><b>聊天</b> — 直接与 Grok 对话</td>
+    <td align="center"><img src="docs/screenshots/logs.png" alt="Logs"/><br/><b>日志</b> — 全量请求记录 + 搜索</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/files.png" alt="Files"/><br/><b>Files</b> — Grok 云端文件管理</td>
+    <td align="center"></td>
+  </tr>
+</table>
+
 ---
 
 ## What it does
@@ -264,25 +283,6 @@ uv run xgate
 | `GET  /admin/status` | 运行状态 |
 
 所有 `/v1/*` 与 `/admin/*` 都需要 `Authorization: Bearer <api_key>` 或 `x-api-key`。
-
----
-
-## Web UI 截图
-
-<table>
-  <tr>
-    <td align="center"><img src="docs/screenshots/dashboard.png" alt="Dashboard"/><br/><b>首页 Dashboard</b> — 统计卡片 + 14 天趋势图 + 额度概览</td>
-    <td align="center"><img src="docs/screenshots/chat.png" alt="Chat"/><br/><b>聊天</b> — 直接与 Grok 对话，支持模型切换</td>
-  </tr>
-  <tr>
-    <td align="center"><img src="docs/screenshots/gen.png" alt="Generation"/><br/><b>生成</b> — 连续生图 + 实时瀑布 feed，支持 Image / Video 模式</td>
-    <td align="center"><img src="docs/screenshots/images.png" alt="Gallery"/><br/><b>图库</b> — 按 session 侧栏 + 全局瀑布流，PhotoSwipe 灯箱</td>
-  </tr>
-  <tr>
-    <td align="center"><img src="docs/screenshots/logs.png" alt="Logs"/><br/><b>日志</b> — 聊天 / 图片 / 视频分类筛选，prompt 全文搜索</td>
-    <td align="center"><img src="docs/screenshots/files.png" alt="Files"/><br/><b>Files</b> — Grok 云端文件瀑布流，无限滚动，批量下载 / 删除</td>
-  </tr>
-</table>
 
 ---
 
