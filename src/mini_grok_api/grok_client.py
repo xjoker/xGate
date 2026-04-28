@@ -365,17 +365,25 @@ async def smoke_skills(settings: Settings, *, extra_headers: dict[str, str] | No
         except Exception as exc:
             raise GrokClientError(f"Grok skills smoke failed: {exc}", status_code=502) from exc
 
-    body = response.content.decode("utf-8", "replace")[:400]
+    full_body = response.content.decode("utf-8", "replace")
+    body = full_body[:400]
     if response.status_code != 200:
-        if _contains_cloudflare_challenge(response.status_code, body):
+        if _contains_cloudflare_challenge(response.status_code, full_body[:8192]):
             raise GrokClientError(
-                "Grok Cloudflare challenge detected",
+                "Cloudflare 拦截（cf_clearance 失效）— 请确认 FlareSolverr 在线且与 xGate 使用同一出口 IP",
                 status_code=403,
                 body=body,
                 code="cloudflare_challenge",
             )
+        if response.status_code == 403:
+            raise GrokClientError(
+                "Grok 返回 403 — Cookie 可能已失效或被 Cloudflare 拦截，请重新从浏览器导入 cURL",
+                status_code=403,
+                body=body,
+                code="upstream_403",
+            )
         raise GrokClientError(
-            f"Grok skills smoke returned {response.status_code}",
+            f"Grok skills smoke 返回 {response.status_code}",
             status_code=response.status_code,
             body=body,
             code="upstream_error",

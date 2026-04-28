@@ -1050,15 +1050,9 @@ async def import_curl(curl_text: Annotated[str, Form()]) -> JSONResponse:
         smoke = await smoke_skills(candidate, extra_headers=result.headers)
     except GrokClientError as exc:
         code = exc.code or "upstream_error"
-        monitor.record_failure(
-            exc.status_code,
-            str(exc),
-            cloudflare=code == "cloudflare_challenge",
-        )
-        return JSONResponse(
-            {"ok": False, "error": f"cURL 解析成功，但 /rest/skills 冒烟失败：{exc}"},
-            status_code=400,
-        )
+        is_cf = code in {"cloudflare_challenge", "upstream_403"}
+        monitor.record_failure(exc.status_code, str(exc), cloudflare=is_cf)
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
     settings_store.update(
         grok_cookie=result.cookie,
