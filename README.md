@@ -93,26 +93,43 @@ xGate 自身是无状态轻量服务，但运行时依赖以下外部组件：
 docker pull ghcr.io/xjoker/xgate:latest
 ```
 
-根据 FlareSolverr 的部署位置选择以下两种方式之一。
+---
+
+### 极速启动（单容器，3 步）
+
+```bash
+# 1. 创建配置目录并下载示例配置
+mkdir -p data/config
+curl -fsSL https://raw.githubusercontent.com/xjoker/xGate/main/data/config/mini.toml.example \
+  -o data/config/mini.toml
+
+# 2. 修改 api_key（必改，其余可稍后在 Web UI 设置）
+#    data/config/mini.toml → api_key = "your-secret-key"
+
+# 3. 启动
+docker run -d --name xgate -p 8024:8024 -v $(pwd)/data:/app/data \
+  ghcr.io/xjoker/xgate:latest
+```
+
+访问 `http://localhost:8024`，用 `api_key` 登录，进入「设置」导入 cURL 即可使用。
+
+> FlareSolverr 地址和代理均可在「设置 → 手动配置」里在线填写，无需重启容器。
 
 ---
 
-### 方式 A：同机部署（xGate + FlareSolverr 一体）
+### 完整部署（含 FlareSolverr，推荐生产）
 
-**适合**：在同一台有代理的服务器上一键启动全部组件。
+**适合**：需要稳定自动刷新 `cf_clearance`，一键拉起全部组件。
 
 ```bash
-# 1. 下载配置文件（不需要 clone 仓库）
-mkdir -p xgate/data/config && cd xgate
+mkdir -p data/config
 curl -fsSL https://raw.githubusercontent.com/xjoker/xGate/main/data/config/mini.toml.example \
   -o data/config/mini.toml
 curl -fsSL https://raw.githubusercontent.com/xjoker/xGate/main/docker-compose.yml \
   -o docker-compose.yml
 
-# 2. 编辑 mini.toml（见下方关键配置）
-
-# 3. 启动（同时拉起 FlareSolverr）
-docker compose --profile full up -d
+# 编辑 mini.toml（见下方关键配置）
+docker compose --profile full up -d   # 同时启动 xGate + FlareSolverr
 ```
 
 `mini.toml` 关键配置：
@@ -122,26 +139,25 @@ docker compose --profile full up -d
 api_key = "请改成你自己的随机串"
 
 [grok]
-proxy = "socks5://user:pass@127.0.0.1:1080"   # 本机 SOCKS5 代理
-flaresolverr_url = "http://flaresolverr:8191"  # compose 内部服务名
+proxy = "socks5://user:pass@127.0.0.1:1080"   # 本机 SOCKS5 代理（无代理可留空）
+flaresolverr_url = "http://flaresolverr:8191"  # compose 内部服务名，固定此值
 ```
 
 > ⚠️ xGate 与 FlareSolverr 必须使用**同一出口 IP**，否则 `cf_clearance` 因 IP 不匹配失效。同机部署时两者自然一致；若走代理，xGate 的 `proxy` 和 FlareSolverr 出口需相同。
 
 ---
 
-### 方式 B：xGate 单独部署（使用外部 FlareSolverr）
+### 方式 B：xGate 单独部署（接入已有 FlareSolverr）
 
 **适合**：FlareSolverr 已在其他机器/容器运行。
 
 ```bash
-mkdir -p xgate/data/config && cd xgate
+mkdir -p data/config
 curl -fsSL https://raw.githubusercontent.com/xjoker/xGate/main/data/config/mini.toml.example \
   -o data/config/mini.toml
 curl -fsSL https://raw.githubusercontent.com/xjoker/xGate/main/docker-compose.yml \
   -o docker-compose.yml
 
-# 编辑 mini.toml，填写外部 FlareSolverr 地址
 docker compose up -d   # 不加 --profile full，只启动 xGate
 ```
 

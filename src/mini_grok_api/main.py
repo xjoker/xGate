@@ -1075,6 +1075,7 @@ async def update_config(
     grok_user_agent: Annotated[str, Form()] = "",
     grok_browser: Annotated[str, Form()] = "",
     grok_proxy: Annotated[str, Form()] = "",
+    flaresolverr_url: Annotated[str, Form()] = "",
     log_retention_days: Annotated[str, Form()] = "",
 ) -> JSONResponse:
     patch: dict[str, object] = {}
@@ -1088,6 +1089,8 @@ async def update_config(
         patch["grok_browser"] = grok_browser.strip()
     if grok_proxy.strip():
         patch["grok_proxy"] = grok_proxy.strip()
+    if flaresolverr_url.strip():
+        patch["flaresolverr_url"] = flaresolverr_url.strip()
     if log_retention_days.strip():
         try:
             patch["log_retention_days"] = int(log_retention_days.strip())
@@ -1150,6 +1153,7 @@ async def admin_status(settings: Annotated[Settings, Depends(_settings)]) -> dic
         "cookie_masked": mask_secret(settings.grok_cookie),
         "browser": settings.grok_browser,
         "proxy_configured": bool(settings.grok_proxy),
+        "flaresolverr_url": settings.flaresolverr_url or "",
         "log_retention_days": settings.log_retention_days,
     }
 
