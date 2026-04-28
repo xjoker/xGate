@@ -1,7 +1,4 @@
 services:
-  # xGate 主服务
-  # 所有配置走 data/config/mini.toml（首次启动前请先复制 data/config/mini.toml.example）
-  # FlareSolverr 实例地址在 mini.toml 的 grok.flaresolverr_url 里配置
   xgate:
     image: ghcr.io/xjoker/xgate:latest
     # 本地构建：注释掉 image，启用 build:
@@ -14,3 +11,24 @@ services:
     ports:
       - "${SERVER_PORT:-8024}:8024"
     restart: unless-stopped
+    # 同机部署 FlareSolverr 时取消注释（需要 --profile full 启动）
+    # depends_on:
+    #   flaresolverr:
+    #     condition: service_healthy
+
+  # 可选：同机 FlareSolverr（docker compose --profile full up -d）
+  # 若已有外部 FlareSolverr 实例，删除此段，在 mini.toml 填写其地址即可
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    profiles: [full]
+    container_name: flaresolverr
+    environment:
+      - LOG_LEVEL=info
+    ports:
+      - "${FLARESOLVERR_PORT:-8191}:8191"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8191/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

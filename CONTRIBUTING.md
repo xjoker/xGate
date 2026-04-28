@@ -28,9 +28,9 @@ uv run xgate
 
 ## 发布流程（maintainer 用）
 
-1. 打 tag 触发 CI 构建并推送到 GHCR：
+1. 打 tag 触发 CI 构建并推送到 GHCR（tag 格式 `YYYYMMDD`）：
    ```bash
-   git tag v0.x.y && git push origin v0.x.y
+   git tag 20260501 && git push origin 20260501
    ```
 2. **首次发布后**：进入 `https://github.com/xjoker/xGate/pkgs/container/xgate` → Package settings → Change visibility → **Public**，否则用户需要登录才能 `docker pull`。
 

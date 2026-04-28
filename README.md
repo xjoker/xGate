@@ -68,29 +68,52 @@ xGate 自身是无状态轻量服务，但运行时依赖以下外部组件：
 
 ## Quick Start (Docker)
 
-镜像托管在 **GitHub Container Registry**，无需 Docker Hub 账号即可拉取：
+镜像托管在 **GitHub Container Registry**，无需 Docker Hub 账号：
 
 ```bash
 docker pull ghcr.io/xjoker/xgate:latest
 ```
 
-### 1. 准备一个可达的 FlareSolverr
+根据 FlareSolverr 的部署位置选择以下两种方式之一。
 
-最简单的方式：在另一台机器（或同机不同端口）启动官方镜像：
+---
+
+### 方式 A：同机部署（xGate + FlareSolverr 一体）
+
+**适合**：在同一台有代理的服务器上一键启动全部组件。
 
 ```bash
-docker run -d --name flaresolverr \
-  -p 8191:8191 \
-  -e LOG_LEVEL=info \
-  --restart unless-stopped \
-  ghcr.io/flaresolverr/flaresolverr:latest
+# 1. 下载配置文件（不需要 clone 仓库）
+mkdir -p xgate/data/config && cd xgate
+curl -fsSL https://raw.githubusercontent.com/xjoker/xGate/main/data/config/mini.toml.example \
+  -o data/config/mini.toml
+curl -fsSL https://raw.githubusercontent.com/xjoker/xGate/main/docker-compose.yml \
+  -o docker-compose.yml
+
+# 2. 编辑 mini.toml（见下方关键配置）
+
+# 3. 启动（同时拉起 FlareSolverr）
+docker compose --profile full up -d
 ```
 
-> ⚠️ **强烈建议** xGate 与 FlareSolverr **使用同一出口 IP / 同一代理**，否则 `cf_clearance` 因 IP 不匹配会失效。最推荐：FlareSolverr 部署在 SOCKS5 代理所在的同一台机器上，xGate 通过 SOCKS5 出网。
+`mini.toml` 关键配置：
 
-### 2. 准备 xGate 配置
+```toml
+[auth]
+api_key = "请改成你自己的随机串"
 
-创建配置目录并下载示例配置（**不需要 clone 整个仓库**）：
+[grok]
+proxy = "socks5://user:pass@127.0.0.1:1080"   # 本机 SOCKS5 代理
+flaresolverr_url = "http://flaresolverr:8191"  # compose 内部服务名
+```
+
+> ⚠️ xGate 与 FlareSolverr 必须使用**同一出口 IP**，否则 `cf_clearance` 因 IP 不匹配失效。同机部署时两者自然一致；若走代理，xGate 的 `proxy` 和 FlareSolverr 出口需相同。
+
+---
+
+### 方式 B：xGate 单独部署（使用外部 FlareSolverr）
+
+**适合**：FlareSolverr 已在其他机器/容器运行。
 
 ```bash
 mkdir -p xgate/data/config && cd xgate
@@ -98,33 +121,48 @@ curl -fsSL https://raw.githubusercontent.com/xjoker/xGate/main/data/config/mini.
   -o data/config/mini.toml
 curl -fsSL https://raw.githubusercontent.com/xjoker/xGate/main/docker-compose.yml \
   -o docker-compose.yml
-# 编辑 mini.toml，至少填好 api_key、flaresolverr_url、proxy
+
+# 编辑 mini.toml，填写外部 FlareSolverr 地址
+docker compose up -d   # 不加 --profile full，只启动 xGate
 ```
 
-最关键的几行：
+`mini.toml` 关键配置：
+
 ```toml
 [auth]
 api_key = "请改成你自己的随机串"
 
 [grok]
-proxy = "socks5://user:pass@proxy.example.com:1080"   # 与 FlareSolverr 一致
-flaresolverr_url = "http://flaresolverr.example.com:8191"   # FlareSolverr 实例
+proxy = "socks5://user:pass@proxy.example.com:1080"
+flaresolverr_url = "http://192.168.1.100:8191"   # 外部 FlareSolverr 实际地址
 ```
 
-### 3. 启动
+---
+
+### 端口与挂载说明
+
+| 项目 | 默认值 | 环境变量覆盖 |
+|------|--------|-------------|
+| xGate 监听端口（宿主机） | `8024` | `SERVER_PORT=8024` |
+| FlareSolverr 端口（仅 `--profile full`） | `8191` | `FLARESOLVERR_PORT=8191` |
+| 数据目录（配置/图片/视频/日志） | `./data` | — |
+
+端口示例（`.env` 或 `export`）：
 
 ```bash
-docker compose up -d
+SERVER_PORT=9000 docker compose up -d
 ```
 
-打开 `http://localhost:8024`，输入 `api_key` 登录。
+---
 
-### 4. 注入 Grok 登录态
+### 注入 Grok 登录态
 
-1. 浏览器登录 https://grok.com
-2. DevTools → Network → 找到任意 `grok.com` 请求 → 右键「Copy as cURL (bash)」
-3. xGate UI → 设置 → 「导入 cURL」粘贴 → 服务端会立即冒烟验证
-4. 验证通过即可使用所有功能；后台 session_keeper 会自动保活 cf_clearance
+启动后访问 `http://localhost:8024`，输入 `api_key` 登录，然后：
+
+1. 浏览器登录 [grok.com](https://grok.com)
+2. DevTools → Network → 任意 `grok.com` 请求 → 右键「Copy as cURL (bash)」
+3. xGate UI → 设置 → 「导入 cURL」→ 粘贴 → 服务端立即冒烟验证
+4. 验证通过后即可使用所有功能；`session_keeper` 每 ~10 分钟自动刷新 `cf_clearance`
 
 ---
 
