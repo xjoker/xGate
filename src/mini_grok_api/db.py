@@ -70,9 +70,18 @@ class LogDB:
                     duration_ms  INTEGER,
                     error        TEXT
                 );
-                CREATE INDEX IF NOT EXISTS idx_chat_ts  ON chat_logs(created_at);
-                CREATE INDEX IF NOT EXISTS idx_image_ts ON image_logs(created_at);
-                CREATE INDEX IF NOT EXISTS idx_video_ts ON video_logs(created_at);
+                CREATE TABLE IF NOT EXISTS system_logs (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at  REAL    NOT NULL,
+                    event_type  TEXT    NOT NULL DEFAULT '',
+                    status      TEXT    NOT NULL DEFAULT 'success',
+                    duration_ms INTEGER,
+                    detail      TEXT    NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_chat_ts   ON chat_logs(created_at);
+                CREATE INDEX IF NOT EXISTS idx_image_ts  ON image_logs(created_at);
+                CREATE INDEX IF NOT EXISTS idx_video_ts  ON video_logs(created_at);
+                CREATE INDEX IF NOT EXISTS idx_system_ts ON system_logs(created_at);
             """)
 
     # ── Write ─────────────────────────────────────────────────────────────────
@@ -160,6 +169,24 @@ class LogDB:
         except Exception as exc:
             logger.warning("log_video failed: %s", exc)
 
+    def log_system(
+        self,
+        *,
+        event_type: str,
+        status: str = "success",
+        duration_ms: int = 0,
+        detail: str = "",
+    ) -> None:
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO system_logs (created_at,event_type,status,duration_ms,detail)"
+                    " VALUES (?,?,?,?,?)",
+                    (time.time(), event_type, status, duration_ms, detail),
+                )
+        except Exception as exc:
+            logger.warning("log_system failed: %s", exc)
+
     # ── Read ──────────────────────────────────────────────────────────────────
 
     def stats(self) -> dict[str, Any]:
@@ -241,9 +268,6 @@ class LogDB:
         if log_type in ("all", "video"):
             tables.append(("video_logs", "video"))
 
-        if not tables:
-            return [], 0
-
         all_rows: list[dict] = []
         total = 0
         cond, params = self._where(search, from_ts, to_ts)
@@ -263,7 +287,26 @@ class LogDB:
                 ).fetchall()
                 all_rows.extend(self._to_dict(r) for r in rows)
 
-        if len(tables) > 1:
+        if log_type in ("all", "system"):
+            sys_cond, sys_params = self._where_system(search, from_ts, to_ts)
+            with self._connect() as conn:
+                cnt = conn.execute(
+                    f"SELECT COUNT(*) FROM system_logs WHERE {sys_cond}", sys_params
+                ).fetchone()[0]
+                total += cnt
+                fetch_limit = offset + limit if (tables or log_type == "all") else limit
+                fetch_offset = 0 if (tables or log_type == "all") else offset
+                rows = conn.execute(
+                    f"SELECT *,'system' log_type FROM system_logs WHERE {sys_cond}"
+                    f" ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    sys_params + [fetch_limit, fetch_offset],
+                ).fetchall()
+                all_rows.extend(self._to_dict(r) for r in rows)
+
+        if not all_rows:
+            return [], total
+
+        if len(tables) > 0 or log_type in ("all", "system"):
             all_rows.sort(key=lambda x: x["created_at"], reverse=True)
             all_rows = all_rows[offset: offset + limit]
 
@@ -275,6 +318,21 @@ class LogDB:
         params: list = []
         if search:
             parts.append("(prompt LIKE ? OR model LIKE ?)")
+            params += [f"%{search}%", f"%{search}%"]
+        if from_ts:
+            parts.append("created_at >= ?")
+            params.append(from_ts)
+        if to_ts:
+            parts.append("created_at <= ?")
+            params.append(to_ts)
+        return " AND ".join(parts), params
+
+    @staticmethod
+    def _where_system(search: str, from_ts: float | None, to_ts: float | None) -> tuple[str, list]:
+        parts = ["1=1"]
+        params: list = []
+        if search:
+            parts.append("(detail LIKE ? OR event_type LIKE ?)")
             params += [f"%{search}%", f"%{search}%"]
         if from_ts:
             parts.append("created_at >= ?")

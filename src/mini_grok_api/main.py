@@ -149,13 +149,16 @@ _KEEPER_JITTER = 2 * 60  # ±2 分钟随机抖动
 async def _heartbeat_once(settings: Settings) -> None:
     """发送一次 /rest/skills 心跳，捕获新 __cf_bm 并回写配置。"""
     import re as _re
+    import time as _time
     from curl_cffi.requests import AsyncSession as _HBSession
+    t0 = _time.monotonic()
     try:
         h = _headers(settings)
         h["Content-Type"] = "application/json"
         async with _HBSession(**_session_kwargs(settings)) as sess:
             resp = await sess.post(SKILLS_URL, headers=h, data=b'{"locale":"en"}', timeout=20.0)
             raw_sc = resp.headers.get("set-cookie", "")
+            bm_refreshed = False
             if "__cf_bm=" in raw_sc:
                 m = _re.search(r"__cf_bm=([^;]+)", raw_sc)
                 if m:
@@ -167,10 +170,20 @@ async def _heartbeat_once(settings: Settings) -> None:
                         updated = old_cookie.rstrip("; ") + f"; __cf_bm={new_bm}"
                     if updated != old_cookie:
                         settings_store.update(grok_cookie=updated)
+                        bm_refreshed = True
                         logger.info("heartbeat: __cf_bm refreshed")
             logger.info("heartbeat: /rest/skills OK (status=%s)", resp.status_code)
+            ms = int((_time.monotonic() - t0) * 1000)
+            log_db.log_system(
+                event_type="heartbeat",
+                status="success",
+                duration_ms=ms,
+                detail=f"status={resp.status_code} __cf_bm={'refreshed' if bm_refreshed else 'unchanged'}",
+            )
     except Exception as exc:
         logger.warning("heartbeat failed: %s", exc)
+        ms = int((_time.monotonic() - t0) * 1000)
+        log_db.log_system(event_type="heartbeat", status="error", duration_ms=ms, detail=str(exc))
 
 
 async def _session_keeper_loop() -> None:
@@ -233,8 +246,15 @@ async def _session_keeper_loop() -> None:
                         "yes" if "sso" in merged_names else "no",
                         len(merged_names),
                     )
+                    log_db.log_system(
+                        event_type="cf_refresh",
+                        status="success",
+                        detail=f"cf_clearance={'yes' if 'cf_clearance' in cf_only_fresh else 'no'} "
+                               f"sso={'yes' if 'sso' in merged_names else 'no'} cookies={len(merged_names)}",
+                    )
             except Exception as exc:
                 logger.warning("session_keeper: FlareSolverr failed (%s)", exc)
+                log_db.log_system(event_type="cf_refresh", status="error", detail=str(exc))
                 if settings.grok_cookie:
                     await _heartbeat_once(settings)
         elif settings.grok_cookie:
@@ -1002,7 +1022,8 @@ async def quota_check(settings: Annotated[Settings, Depends(_settings)]) -> JSON
     if not settings.grok_cookie:
         return _error_response("GROK_COOKIE not configured", 400, code="missing_grok_cookie")
 
-    import asyncio
+    import asyncio, time as _time
+    t0 = _time.monotonic()
     results = await asyncio.gather(*[
         _fetch_quota(settings, mode) for mode in _QUOTA_MODES
     ])
@@ -1013,6 +1034,15 @@ async def quota_check(settings: Annotated[Settings, Depends(_settings)]) -> JSON
     image_blocked = False
     if auto and auto["total"] > 0:
         image_blocked = auto["used_pct"] >= 90.0
+
+    ms = int((_time.monotonic() - t0) * 1000)
+    detail_parts = [f"{m}:{q['remaining']}/{q['total']}" for m, q in quotas.items() if q]
+    log_db.log_system(
+        event_type="quota",
+        status="success",
+        duration_ms=ms,
+        detail=" | ".join(detail_parts),
+    )
 
     return JSONResponse({
         "quotas": quotas,

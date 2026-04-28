@@ -839,10 +839,11 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
   <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:14px">
     <input id="log-search" style="height:34px;padding:0 10px;border-radius:var(--radius);border:1px solid var(--border-md);background:var(--bg);font-size:13px;min-width:200px;flex:1" placeholder="搜索 prompt / 模型…" oninput="debounceLogs()">
     <div class="pill-group">
-      <button class="pill-btn active" data-lt="all"   onclick="setLogType('all')"   style="font-size:12px">全部</button>
-      <button class="pill-btn" data-lt="chat"  onclick="setLogType('chat')"  style="font-size:12px">聊天</button>
-      <button class="pill-btn" data-lt="image" onclick="setLogType('image')" style="font-size:12px">图片</button>
-      <button class="pill-btn" data-lt="video" onclick="setLogType('video')" style="font-size:12px">视频</button>
+      <button class="pill-btn active" data-lt="all"    onclick="setLogType('all')"    style="font-size:12px">全部</button>
+      <button class="pill-btn" data-lt="chat"   onclick="setLogType('chat')"   style="font-size:12px">聊天</button>
+      <button class="pill-btn" data-lt="image"  onclick="setLogType('image')"  style="font-size:12px">图片</button>
+      <button class="pill-btn" data-lt="video"  onclick="setLogType('video')"  style="font-size:12px">视频</button>
+      <button class="pill-btn" data-lt="system" onclick="setLogType('system')" style="font-size:12px">系统</button>
     </div>
     <button class="btn btn-outline btn-sm" onclick="loadLogs(0)">↻ 刷新</button>
     <button class="btn btn-outline btn-sm" onclick="cleanupLogs()">清理过期</button>
@@ -2100,12 +2101,17 @@ function renderLogs(rows) {
       ? '<span class="status-badge running" style="font-size:10px">聊天</span>'
       : r.log_type === 'video'
       ? '<span class="status-badge done" style="font-size:10px">视频</span>'
+      : r.log_type === 'system'
+      ? '<span class="status-badge pending" style="font-size:10px">系统</span>'
       : '<span class="status-badge paused" style="font-size:10px">图片</span>';
     const status = r.status === 'success'
       ? '<span class="status-badge done" style="font-size:10px">成功</span>'
       : '<span class="status-badge failed" style="font-size:10px">失败</span>';
     const dur = r.duration_ms != null ? (r.duration_ms/1000).toFixed(1)+'s' : '—';
-    const prompt = esc((r.prompt||'').slice(0,60)) + ((r.prompt||'').length>60?'…':'');
+    const isSystem = r.log_type === 'system';
+    const promptText = isSystem ? (r.detail||'') : (r.prompt||'');
+    const modelText  = isSystem ? (r.event_type||'') : (r.model||'');
+    const prompt = esc(promptText.slice(0,60)) + (promptText.length>60?'…':'');
     const detail = r.log_type === 'image'
       ? `<span style="font-size:11px;color:var(--fg-subtle);margin-left:6px">${r.image_count||0}张 · ${esc(r.aspect_ratio||'')}</span>`
       : r.log_type === 'video'
@@ -2116,7 +2122,7 @@ function renderLogs(rows) {
       onmouseover="this.style.background='var(--bg-control)'" onmouseout="this.style.background=''">
       <td style="padding:10px 14px;white-space:nowrap;font-family:var(--font-mono);font-size:11px;color:var(--fg-muted)">${ts}</td>
       <td style="padding:10px 14px">${badge}</td>
-      <td style="padding:10px 14px;font-size:12px;font-family:var(--font-mono);color:var(--fg-muted);white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis">${esc(r.model||'')}</td>
+      <td style="padding:10px 14px;font-size:12px;font-family:var(--font-mono);color:var(--fg-muted);white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis">${esc(modelText)}</td>
       <td style="padding:10px 14px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${prompt}${detail}</td>
       <td style="padding:10px 14px">${status}</td>
       <td style="padding:10px 14px;font-family:var(--font-mono);font-size:12px;color:var(--fg-muted);white-space:nowrap">${dur}</td>
