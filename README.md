@@ -181,6 +181,15 @@ SERVER_PORT=9000 docker compose up -d
 3. xGate UI → 设置 → 「导入 cURL」→ 粘贴 → 服务端立即冒烟验证
 4. 验证通过后即可使用所有功能；`session_keeper` 每 ~10 分钟自动刷新 `cf_clearance`
 
+> **⚠️ 使用代理时的关键要求**
+>
+> `cf_clearance` 由 Cloudflare 颁发给**请求来源 IP**，换 IP 即失效。
+>
+> - 导出 cURL 时，**浏览器必须走与 xGate 相同的代理出口**，否则 `cf_clearance` 的来源 IP 与 xGate 出口 IP 不一致，导入后冒烟立即 403
+> - 同理，FlareSolverr 也必须与 xGate 使用**同一出口 IP**（同机部署天然满足；远程 FlareSolverr 需配置相同代理）
+>
+> 简单验证方法：在已配置代理的浏览器里访问 [whatismyip.com](https://www.whatismyip.com)，确认 IP 与 xGate 出口一致，再执行 cURL 导出。
+
 ---
 
 ## Local Dev (without Docker)
@@ -260,15 +269,20 @@ uv run xgate
 
 ## Web UI 截图
 
-| 视图 | 说明 |
-|------|------|
-| 首页 Dashboard | 统计卡片 + 14 天柱图 + 余额 + 快捷链接 |
-| 生成 | Speed/Quality/Video 三模式 + 比例 + 间隔 + 上限 + 实时 feed |
-| 任务队列 | 优先级队列、暂停/恢复/重排、目标张数进度 |
-| 图库 | 全局时间瀑布流、按 session 卡片侧栏、PhotoSwipe 看图、视频模态框 |
-| 文件 | Grok 云端文件瀑布流，无限滚动，批量下载/删除 |
-| 日志 | 聊天/图片/视频分类筛选，prompt 全文搜索 |
-| 设置 | cURL 导入、API Key/代理修改、cookie 脱敏 |
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/dashboard.png" alt="Dashboard"/><br/><b>首页 Dashboard</b> — 统计卡片 + 14 天趋势图 + 额度概览</td>
+    <td align="center"><img src="docs/screenshots/chat.png" alt="Chat"/><br/><b>聊天</b> — 直接与 Grok 对话，支持模型切换</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/gen.png" alt="Generation"/><br/><b>生成</b> — 连续生图 + 实时瀑布 feed，支持 Image / Video 模式</td>
+    <td align="center"><img src="docs/screenshots/images.png" alt="Gallery"/><br/><b>图库</b> — 按 session 侧栏 + 全局瀑布流，PhotoSwipe 灯箱</td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/logs.png" alt="Logs"/><br/><b>日志</b> — 聊天 / 图片 / 视频分类筛选，prompt 全文搜索</td>
+    <td align="center"><img src="docs/screenshots/files.png" alt="Files"/><br/><b>Files</b> — Grok 云端文件瀑布流，无限滚动，批量下载 / 删除</td>
+  </tr>
+</table>
 
 ---
 
