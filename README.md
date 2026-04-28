@@ -256,12 +256,63 @@ SERVER_PORT=9000 docker compose up -d
 
 ## Local Dev (without Docker)
 
+> 不依赖 Docker，直接在本机跑。**FlareSolverr 可选**，不配置时也能正常工作（仅在 Cloudflare 挑战时降级）。
+
+### 前置
+
+- **Python 3.13**（macOS 推荐 `brew install python@3.13`，Linux 用系统包或 pyenv）
+- **[uv](https://docs.astral.sh/uv/)**（统一管理虚拟环境与依赖）
+  ```bash
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  ```
+
+### 启动
+
 ```bash
-# Python 3.13 + uv
+# 1. 克隆
+git clone https://github.com/xjoker/xGate.git
+cd xGate
+
+# 2. 安装依赖（自动建 .venv）
 uv sync
+
+# 3. 准备配置
+mkdir -p data/config
 cp data/config/mini.toml.example data/config/mini.toml
-# 编辑 mini.toml
+# 编辑 data/config/mini.toml：至少改 auth.api_key（默认 "change-me"）；
+# grok.cookie 可留空，启动后再用 Web UI 的「设置 → 导入 cURL」导入。
+
+# 4. 启动（前台，Ctrl+C 退出）
 uv run xgate
+```
+
+启动成功后看到：
+
+```
+INFO  Uvicorn running on http://0.0.0.0:8024 (Press CTRL+C to quit)
+```
+
+浏览器访问 `http://localhost:8024`，用 `auth.api_key` 登录。
+
+### 后台运行 / 停止
+
+```bash
+# 后台启动，日志写到 /tmp/xgate.log
+nohup uv run xgate > /tmp/xgate.log 2>&1 &
+
+# 查看
+tail -f /tmp/xgate.log
+
+# 停止
+pkill -f "/.venv/bin/xgate"
+```
+
+### 自定义端口
+
+修改 `data/config/mini.toml` 的 `server.port`，或临时通过环境变量：
+
+```bash
+SERVER_PORT=9000 uv run xgate
 ```
 
 ---
