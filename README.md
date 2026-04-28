@@ -22,7 +22,7 @@
   </tr>
   <tr>
     <td align="center"><img src="docs/screenshots/files.png" alt="Files"/><br/><b>Files</b> — Grok 云端文件管理</td>
-    <td align="center"></td>
+    <td align="center"><img src="docs/screenshots/settings.png" alt="Settings"/><br/><b>设置</b> — cURL 导入、代理 / FlareSolverr 配置</td>
   </tr>
 </table>
 
