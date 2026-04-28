@@ -63,7 +63,23 @@ graph LR
     FS <-->|"solve CF challenge"| Grok
 ```
 
-### 为什么需要 FlareSolverr？
+### FlareSolverr 是可选的
+
+**不配置 FlareSolverr 也能正常运行**，xGate 会退化到「心跳保活」模式：session_keeper 定期请求 `rest/skills` 来维持 `cf_clearance` 活跃，只要 Cloudflare 不主动下发新的 JS Challenge，cookie 就不会失效。
+
+| 模式 | 条件 | 稳定性 |
+|------|------|--------|
+| **自动刷新**（推荐） | 配置了 `flaresolverr_url` | `cf_clearance` 到期前主动拿新的，长期稳定 |
+| **心跳保活** | 未配置 FlareSolverr | 依赖 CF 不主动下发 Challenge；`cf_clearance` 失效后需手动重新导入 cURL |
+
+**没有 FlareSolverr 时可能出现的问题**：
+- `cf_clearance` 通常 30 分钟～24 小时后失效，失效后所有请求返回 403
+- 遇到 CF 主动下发 JS Challenge（如更换 IP、访问频率异常）时无法自动恢复
+- 解决方法：重新从 Chrome 导出 cURL 导入即可恢复
+
+**建议**：日常轻度使用可以只用单容器不配 FlareSolverr，需要长期无人值守运行时再加上。
+
+### 为什么 FlareSolverr 能解决这个问题？
 
 Cloudflare 的 `cf_clearance` cookie 与浏览器的 JA3/JA4 TLS 指纹绑定。`curl_cffi` 模拟的 chrome142 与 FlareSolverr 内置的真实 Chromium 142 指纹一致，所以 FlareSolverr 拿到的 `cf_clearance` 可以直接被 xGate 复用 — 这是当前能在 Linux Docker 内稳定通过 CF 的唯一可靠方案。
 
@@ -78,7 +94,7 @@ xGate 自身是无状态轻量服务，但运行时依赖以下外部组件：
 | 组件 | 是否必须 | 说明 |
 |------|----------|------|
 | **grok.com 登录态** | 必须 | 需要已登录的 Grok 账号，通过 Web UI「导入 cURL」注入 |
-| **[FlareSolverr](https://github.com/FlareSolverr/FlareSolverr)** | 强烈建议 | 自动刷新 `cf_clearance`；缺少时只能靠心跳保活，稳定性大幅下降 |
+| **[FlareSolverr](https://github.com/FlareSolverr/FlareSolverr)** | 可选（推荐） | 自动刷新 `cf_clearance`；不配置则退化为心跳保活，`cf_clearance` 失效需手动重新导入 |
 | **SOCKS5 / HTTP 代理** | 视情况 | 若部署节点直连 grok.com 受限（常见于 VPS/大陆），必须配置；需与 FlareSolverr 使用同一出口 IP |
 
 > **部署顺序建议**：代理 → FlareSolverr（指向同代理出口）→ xGate（配置相同代理 + FlareSolverr 地址）。
