@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Build / dist
+build/
+dist/
+*.egg-info/
+.tmp/
+
+# Env / secrets
+.env
+.env.local
+*.pem
+
+# Runtime data (cookies, generated images/videos, SQLite logs)
+data/config/mini.toml
+data/images/
+data/file/
+data/_videos/
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Internal scratch (not for public repo)
+.AIINFO/
+.claude/
+PROMPT.md
+AGENTS.md
+docs/reference-map.md

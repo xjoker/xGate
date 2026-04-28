@@ -1,0 +1,16 @@
+services:
+  # xGate 主服务
+  # 所有配置走 data/config/mini.toml（首次启动前请先复制 data/config/mini.toml.example）
+  # FlareSolverr 实例地址在 mini.toml 的 grok.flaresolverr_url 里配置
+  xgate:
+    image: ghcr.io/xjoker/xgate:latest
+    # 本地构建：注释掉 image，启用 build:
+    # build:
+    #   context: .
+    #   dockerfile: Dockerfile
+    container_name: xgate
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "${SERVER_PORT:-8024}:8024"
+    restart: unless-stopped

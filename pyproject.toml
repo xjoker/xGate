@@ -1,0 +1,50 @@
+[project]
+name = "xgate"
+version = "0.1.0"
+description = "OpenAI-compatible API gateway for xAI Grok web with built-in chat/image/video, web admin and FlareSolverr-based CF auto-refresh."
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+authors = [{ name = "xjoker" }]
+keywords = ["grok", "xai", "openai", "api", "gateway", "cloudflare", "flaresolverr"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.13",
+    "Framework :: FastAPI",
+    "Topic :: Internet :: Proxy Servers",
+    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+]
+dependencies = [
+    "aiohttp>=3.11.0",
+    "curl-cffi>=0.15.0",
+    "fastapi>=0.119.0",
+    "orjson>=3.11.4",
+    "pydantic>=2.12.0",
+    "python-multipart>=0.0.26",
+    "uvicorn[standard]>=0.38.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/xjoker/xGate"
+Repository = "https://github.com/xjoker/xGate"
+Issues = "https://github.com/xjoker/xGate/issues"
+
+[project.scripts]
+xgate = "mini_grok_api.main:run"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mini_grok_api"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

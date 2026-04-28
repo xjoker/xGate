@@ -1,0 +1,310 @@
+"""Grok 图片 WS 唯一入口 — 所有生图请求串行通过同一个 worker。
+
+设计：
+- 单条 asyncio.Queue，单 worker task，同一时刻最多一条 WS 连接
+- 两种 job 类型：
+    oneshot   → 收完第一批返回 list[ImageResult]（/v1/images/generations）
+    streaming → 持续收批，通过 asyncio.Queue 向调用方 yield（stream worker / task queue）
+- WS 断线后自动重连并继续当前 job（不丢弃），重连计入同一 session
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import random
+import time
+import uuid
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, AsyncGenerator, Callable
+
+import aiohttp
+
+from .config import Settings
+from .grok_client import (
+    GrokClientError,
+    IMAGE_DIR,
+    ImageResult,
+    _build_imagine_msg,
+    _build_reset_msg,
+    _collect_batch,
+    _init_session,
+    _ws_connect,
+    _ws_headers,
+    resolve_aspect_ratio,
+)
+
+logger = logging.getLogger(__name__)
+
+_SENTINEL = None  # 用于终止 worker 的哨兵值
+
+
+@dataclass
+class _WsJob:
+    session_dir: Path
+    prompt: str
+    aspect_ratio: str
+    enable_pro: bool
+    stop_event: asyncio.Event
+    interval_seconds: float
+    max_batches: int              # -1 = 无限
+    on_batch: Callable[[list[ImageResult]], None]
+    on_error: Callable[[Exception], None]
+    on_done: Callable[[], None]
+    image_data: str | None = None
+
+
+class WsGateway:
+    """图片 WS 串行网关 — 整个项目唯一 WS 入口。"""
+
+    def __init__(self) -> None:
+        self._queue: asyncio.Queue[_WsJob | None] = asyncio.Queue()
+        self._worker_task: asyncio.Task | None = None
+        self._settings_getter: Any = None
+        self._current_job: _WsJob | None = None
+
+    # ------------------------------------------------------------------
+    # 生命周期
+    # ------------------------------------------------------------------
+
+    def start(self, settings_getter: Any) -> None:
+        self._settings_getter = settings_getter
+        if self._worker_task is None or self._worker_task.done():
+            self._worker_task = asyncio.create_task(
+                self._worker_loop(), name="ws-gateway"
+            )
+            logger.info("WsGateway worker started")
+
+    def stop(self) -> None:
+        self._queue.put_nowait(_SENTINEL)
+
+    def queue_depth(self) -> int:
+        return self._queue.qsize()
+
+    def is_busy(self) -> bool:
+        return self._current_job is not None
+
+    # ------------------------------------------------------------------
+    # 公共 API
+    # ------------------------------------------------------------------
+
+    async def generate_images(
+        self,
+        prompt: str,
+        aspect_ratio: str,
+        enable_pro: bool,
+        session_dir: Path,
+        image_data: str | None = None,
+    ) -> list[ImageResult]:
+        """一次性生图：提交 job，等待第一批完成后返回。"""
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[list[ImageResult]] = loop.create_future()
+        stop = asyncio.Event()
+
+        def on_batch(batch: list[ImageResult]) -> None:
+            if not fut.done():
+                fut.set_result(batch)
+            stop.set()  # 取到一批即停
+
+        def on_error(exc: Exception) -> None:
+            if not fut.done():
+                fut.set_exception(exc)
+
+        def on_done() -> None:
+            if not fut.done():
+                fut.set_exception(
+                    GrokClientError("Imagine returned no images", status_code=502, code="no_images")
+                )
+
+        job = _WsJob(
+            session_dir=session_dir,
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            enable_pro=enable_pro,
+            stop_event=stop,
+            interval_seconds=0,
+            max_batches=1,
+            on_batch=on_batch,
+            on_error=on_error,
+            on_done=on_done,
+            image_data=image_data,
+        )
+        await self._queue.put(job)
+        return await fut
+
+    async def stream_batches(
+        self,
+        prompt: str,
+        aspect_ratio: str,
+        enable_pro: bool,
+        session_dir: Path,
+        stop_event: asyncio.Event,
+        interval_seconds: float,
+        max_batches: int,
+        image_data: str | None = None,
+    ) -> AsyncGenerator[list[ImageResult], None]:
+        """持续生图：提交 job，通过 async generator yield 每批结果。"""
+        batch_q: asyncio.Queue[list[ImageResult] | BaseException | None] = asyncio.Queue()
+
+        def on_batch(batch: list[ImageResult]) -> None:
+            batch_q.put_nowait(batch)
+
+        def on_error(exc: Exception) -> None:
+            batch_q.put_nowait(exc)
+
+        def on_done() -> None:
+            batch_q.put_nowait(_SENTINEL)
+
+        job = _WsJob(
+            session_dir=session_dir,
+            prompt=prompt,
+            aspect_ratio=aspect_ratio,
+            enable_pro=enable_pro,
+            stop_event=stop_event,
+            interval_seconds=interval_seconds,
+            max_batches=max_batches,
+            on_batch=on_batch,
+            on_error=on_error,
+            on_done=on_done,
+            image_data=image_data,
+        )
+        await self._queue.put(job)
+
+        while True:
+            item = await batch_q.get()
+            if item is _SENTINEL:
+                return
+            if isinstance(item, BaseException):
+                raise item
+            yield item  # type: ignore[misc]
+
+    # ------------------------------------------------------------------
+    # Worker
+    # ------------------------------------------------------------------
+
+    async def _worker_loop(self) -> None:
+        while True:
+            job = await self._queue.get()
+            if job is _SENTINEL:
+                logger.info("WsGateway worker stopping")
+                break
+            self._current_job = job
+            try:
+                await self._run_job(job)
+            except Exception as exc:
+                logger.warning("WsGateway job failed: %s", exc)
+                try:
+                    job.on_error(exc)
+                except Exception:
+                    pass
+                try:
+                    job.on_done()
+                except Exception:
+                    pass
+            finally:
+                self._current_job = None
+
+    async def _run_job(self, job: _WsJob) -> None:
+        """执行单个 job，含断线重连逻辑。"""
+        settings: Settings = self._settings_getter()
+        timeout = settings.grok_timeout_seconds
+        proxy = settings.grok_proxy or None
+        batch_count = 0
+        consecutive_errors = 0
+        _MAX_CONSECUTIVE_ERRORS = 5
+
+        while not job.stop_event.is_set():
+            if job.max_batches >= 0 and batch_count >= job.max_batches:
+                break
+
+            try:
+                connector = aiohttp.TCPConnector(ssl=False)
+                async with aiohttp.ClientSession(
+                    connector=connector,
+                    headers=_ws_headers(settings),
+                ) as http_sess:
+                    ws = await _ws_connect(http_sess, timeout, proxy)
+                    async with ws:
+                        await ws.send_json(_build_reset_msg())
+                        await ws.send_json(_build_imagine_msg(
+                            str(uuid.uuid4()),
+                            job.prompt, job.aspect_ratio, job.enable_pro,
+                            is_initial=True,
+                            image_data=job.image_data,
+                        ))
+                        logger.info(
+                            "WsGateway WS open: prompt=%r batches_so_far=%d",
+                            job.prompt[:40], batch_count,
+                        )
+
+                        while not job.stop_event.is_set():
+                            if job.max_batches >= 0 and batch_count >= job.max_batches:
+                                return
+
+                            deadline = asyncio.get_event_loop().time() + timeout
+                            results, ws_closed = await _collect_batch(
+                                ws, deadline, session_dir=job.session_dir
+                            )
+
+                            if results:
+                                job.on_batch(results)
+                                batch_count += 1
+
+                            if ws_closed:
+                                logger.info("WsGateway WS closed by server, reconnecting")
+                                break  # 外层 while 重连
+
+                            if job.stop_event.is_set():
+                                return
+                            if job.max_batches >= 0 and batch_count >= job.max_batches:
+                                return
+
+                            # 间隔 + jitter
+                            jitter = random.uniform(1.5, 4.0)
+                            wait = job.interval_seconds + jitter
+                            logger.info(
+                                "WsGateway interval: %.1fs (base=%.1f +jitter=%.1f) batch=%d",
+                                wait, job.interval_seconds, jitter, batch_count,
+                            )
+                            try:
+                                await asyncio.wait_for(job.stop_event.wait(), timeout=wait)
+                                return  # stop_event 触发
+                            except asyncio.TimeoutError:
+                                pass
+
+                            # 同一 WS 连接上发 input_text（is_initial=False）触发下一批
+                            try:
+                                await ws.send_json(_build_imagine_msg(
+                                    str(uuid.uuid4()),
+                                    job.prompt, job.aspect_ratio, job.enable_pro,
+                                    is_initial=False,
+                                ))
+                                logger.info(
+                                    "WsGateway next batch request: batch=%d",
+                                    batch_count + 1,
+                                )
+                            except Exception as exc:
+                                logger.warning("WsGateway next batch send failed: %s", exc)
+                                break  # 重连
+
+            except GrokClientError:
+                raise
+            except Exception as exc:
+                if job.stop_event.is_set():
+                    return
+                consecutive_errors += 1
+                if consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                    raise GrokClientError(
+                        f"WsGateway failed after {consecutive_errors} consecutive errors: {exc}",
+                        status_code=502,
+                    ) from exc
+                logger.warning(
+                    "WsGateway session error (%d/%d): %s, retrying in 3s",
+                    consecutive_errors, _MAX_CONSECUTIVE_ERRORS, exc,
+                )
+                await asyncio.sleep(3.0)
+            else:
+                consecutive_errors = 0  # 本次连接成功，重置计数
+
+        job.on_done()
