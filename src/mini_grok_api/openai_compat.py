@@ -8,6 +8,10 @@ from typing import Any
 
 import orjson
 
+# 静态 system_fingerprint：OpenAI 用它标识同一份模型权重 + 后端配置。
+# 我们没有真正的版本指纹，给一个稳定常量足以让 SDK 解析通过。
+SYSTEM_FINGERPRINT = "fp_xgate"
+
 
 def response_id() -> str:
     return f"chatcmpl-{int(time.time() * 1000)}{secrets.token_hex(4)}"
@@ -26,20 +30,31 @@ def usage(prompt: str, completion: str) -> dict:
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": prompt_tokens + completion_tokens,
+        "prompt_tokens_details": {"cached_tokens": 0},
+        "completion_tokens_details": {"reasoning_tokens": 0},
     }
 
 
-def chat_response(model: str, content: str, prompt: str, *, rid: str | None = None) -> dict:
+def chat_response(
+    model: str,
+    content: str,
+    prompt: str,
+    *,
+    rid: str | None = None,
+    finish_reason: str = "stop",
+) -> dict:
     return {
         "id": rid or response_id(),
         "object": "chat.completion",
         "created": int(time.time()),
         "model": model,
+        "system_fingerprint": SYSTEM_FINGERPRINT,
         "choices": [
             {
                 "index": 0,
                 "message": {"role": "assistant", "content": content},
-                "finish_reason": "stop",
+                "finish_reason": finish_reason,
+                "logprobs": None,
             }
         ],
         "usage": usage(prompt, content),
@@ -52,10 +67,16 @@ def stream_chunk(
     content: str,
     *,
     finish_reason: str | None = None,
+    role: str | None = "assistant",
 ) -> dict:
+    delta: dict[str, Any] = {}
+    if role is not None:
+        delta["role"] = role
+    delta["content"] = content
     choice: dict[str, Any] = {
         "index": 0,
-        "delta": {"role": "assistant", "content": content},
+        "delta": delta,
+        "logprobs": None,
     }
     if finish_reason is not None:
         choice["finish_reason"] = finish_reason
@@ -64,12 +85,53 @@ def stream_chunk(
         "object": "chat.completion.chunk",
         "created": int(time.time()),
         "model": model,
+        "system_fingerprint": SYSTEM_FINGERPRINT,
         "choices": [choice],
+    }
+
+
+def stream_usage_chunk(rid: str, model: str, prompt: str, completion: str) -> dict:
+    """流式末尾的 usage chunk（仅在 stream_options.include_usage=true 时发出）。"""
+    return {
+        "id": rid,
+        "object": "chat.completion.chunk",
+        "created": int(time.time()),
+        "model": model,
+        "system_fingerprint": SYSTEM_FINGERPRINT,
+        "choices": [],
+        "usage": usage(prompt, completion),
     }
 
 
 def sse_data(payload: dict) -> str:
     return f"data: {orjson.dumps(payload).decode('utf-8')}\n\n"
+
+
+# 错误 status → OpenAI 标准 type 映射。
+# 调用方仍可显式传 error_type 覆盖默认。
+_STATUS_TO_TYPE = {
+    400: "invalid_request_error",
+    401: "authentication_error",
+    403: "permission_error",
+    404: "not_found_error",
+    409: "invalid_request_error",
+    422: "invalid_request_error",
+    429: "rate_limit_error",
+    500: "server_error",
+    502: "api_error",
+    503: "api_error",
+    504: "api_error",
+}
+
+
+def type_for_status(status: int) -> str:
+    if status in _STATUS_TO_TYPE:
+        return _STATUS_TO_TYPE[status]
+    if status >= 500:
+        return "api_error"
+    if status >= 400:
+        return "invalid_request_error"
+    return "server_error"
 
 
 def error_payload(

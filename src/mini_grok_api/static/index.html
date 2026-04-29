@@ -1379,7 +1379,13 @@ const RATIOS = [
 ];
 
 // ── Auth ───────────────────────────────────────────────────────
-function getKey() { return localStorage.getItem('api_key') || ''; }
+// 从 HttpOnly + xgate_csrf 双 cookie 读 CSRF token；前端只能读非 HttpOnly 的 csrf cookie。
+function getCsrf() {
+  const m = document.cookie.match(/(?:^|;\s*)xgate_csrf=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : '';
+}
+// 兼容遗留代码引用：现在不再把 api_key 存在前端，保留空字符串避免 ReferenceError。
+function getKey() { return ''; }
 
 function showLogin(msg) {
   document.getElementById('login-overlay').style.display = 'flex';
@@ -1401,9 +1407,12 @@ window.doLogin = async function() {
   if (!key) { errEl.textContent = '请输入 API Key'; return; }
   btn.disabled = true; btn.textContent = '验证中…';
   try {
-    const r = await fetch('/admin/status', { headers: { 'Authorization': 'Bearer ' + key } });
+    const fd = new FormData();
+    fd.append('api_key', key);
+    const r = await fetch('/v1/auth/login', { method: 'POST', body: fd, credentials: 'same-origin' });
     if (r.ok) {
-      localStorage.setItem('api_key', key);
+      // 清掉任何遗留的 localStorage api_key（旧版本可能写过）
+      try { localStorage.removeItem('api_key'); } catch {}
       hideLogin();
       initApp();
     } else if (r.status === 401) {
@@ -1419,8 +1428,16 @@ window.doLogin = async function() {
   }
 };
 
-window.doLogout = function() {
-  localStorage.removeItem('api_key');
+window.doLogout = async function() {
+  const csrf = getCsrf();
+  try {
+    await fetch('/v1/auth/logout', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: csrf ? { 'X-CSRF-Token': csrf } : {},
+    });
+  } catch {}
+  try { localStorage.removeItem('api_key'); } catch {}
   showLogin();
 };
 
@@ -1443,9 +1460,21 @@ function _attachAutosize(el) {
   requestAnimationFrame(() => _autosize(el));
 }
 
+function _attachAuthHeaders(method, headers) {
+  // 浏览器走 HttpOnly cookie 通道，无需手动加 Authorization。
+  // 状态修改请求需要附带 CSRF Header（Double Submit Cookie 模式）。
+  const m = (method || 'GET').toUpperCase();
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(m)) {
+    const csrf = getCsrf();
+    if (csrf) headers['X-CSRF-Token'] = csrf;
+  }
+  return headers;
+}
+
 async function api(method, path, body) {
-  const opts = { method, headers: { 'Authorization': 'Bearer ' + getKey() } };
-  if (body !== undefined) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const headers = _attachAuthHeaders(method, {});
+  const opts = { method, headers, credentials: 'same-origin' };
+  if (body !== undefined) { headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
   const r = await fetch(path, opts);
   const d = await r.json().catch(() => ({}));
   // 仅当 401 且错误类型是 xgate 自己的鉴权失败时才踢登录；上游错误不应触发踢出
@@ -1458,7 +1487,8 @@ async function api(method, path, body) {
 }
 
 async function apiForm(method, path, formData) {
-  const r = await fetch(path, { method, body: formData, headers: { 'Authorization': 'Bearer ' + getKey() } });
+  const headers = _attachAuthHeaders(method, {});
+  const r = await fetch(path, { method, body: formData, headers, credentials: 'same-origin' });
   if (r.status === 401) {
     const d = await r.clone().json().catch(() => ({}));
     if (d?.error?.type === 'authentication_error') { showLogin('会话已过期，请重新登录'); }
@@ -1796,7 +1826,7 @@ async function _runChatImagine(prompt, imageCount) {
     grid.innerHTML = urls.map(u => {
       const m = u.match(/assets\.grok\.com\/(.+)$/);
       const key = m ? m[1] : '';
-      const proxied = `/v1/grok/assets/download?key=${encodeURIComponent(key)}&inline=1&api_key=${encodeURIComponent(getKey())}`;
+      const proxied = `/v1/grok/assets/download?key=${encodeURIComponent(key)}&inline=1`;
       // 用 <a href>：photoswipe 通过 href 拿放大用的高清 URL，无 href 就放大失败
       return `<a class="masonry-tile pswp-item" href="${proxied}" data-pswp-width="1024" data-pswp-height="1024">
         <img src="${proxied}" loading="lazy" style="width:100%;display:block">
@@ -3190,9 +3220,14 @@ window.chatSend = async function() {
   let accumulated = '';
 
   try {
+    const csrf = getCsrf();
     const resp = await fetch('/v1/chat/completions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + getKey() },
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+      },
       body: JSON.stringify({ model, messages: chatHistory, stream: true }),
     });
     if (!resp.ok) {
@@ -3350,11 +3385,12 @@ async function _loadCardThumb(card, url) {
     return;
   }
   // 远程缩略图（/v1/grok/assets/download...）：直接 <img src>，
-  // 加 ?inline=1&api_key= 让浏览器渐进式加载 + HTTP cache 复用，不再 fetch+blob
+  // 加 ?inline=1 让浏览器渐进式加载 + HTTP cache 复用；鉴权走 HttpOnly cookie，
+  // 不再把 api_key 拼在 URL 里（避免 access log / DevTools / 截图泄露）。
   let finalUrl = url;
   if (!isLocal && url.startsWith('/v1/grok/assets/download')) {
     const sep = url.includes('?') ? '&' : '?';
-    finalUrl = url + sep + 'inline=1&api_key=' + encodeURIComponent(getKey());
+    finalUrl = url + sep + 'inline=1';
   }
   const img = card.querySelector('.file-thumb-img');
   if (img) {
@@ -3899,7 +3935,7 @@ async function _triggerBrowserDownload(filename, key, isLocal) {
   toast('准备中…', '');
   try {
     const r = await fetch(`/v1/grok/assets/download?key=${encodeURIComponent(key)}&filename=${encodeURIComponent(filename)}`,
-      { headers: { 'Authorization': 'Bearer ' + getKey() } });
+      { credentials: 'same-origin' });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const blob = await r.blob();
     const objUrl = URL.createObjectURL(blob);
@@ -4374,16 +4410,13 @@ function initApp() {
   }, 8000);
 }
 
-// On page load: validate saved key or show login
+// 启动：用 /v1/auth/whoami 探测 cookie 会话；无效则尝试匿名 /admin/status
+// （服务端未配置 api_key 时全开放）；都失败则显示登录窗。
 (async () => {
-  const saved = getKey();
-  if (saved) {
-    try {
-      const r = await fetch('/admin/status', { headers: { 'Authorization': 'Bearer ' + saved } });
-      if (r.ok) { hideLogin(); initApp(); return; }
-    } catch {}
-  }
-  // No key or invalid — but check if server has no auth configured
+  try {
+    const r = await fetch('/v1/auth/whoami', { credentials: 'same-origin' });
+    if (r.ok) { hideLogin(); initApp(); return; }
+  } catch {}
   try {
     const r = await fetch('/admin/status');
     if (r.ok) { hideLogin(); initApp(); return; }

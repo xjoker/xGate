@@ -8,10 +8,10 @@ api_key = "change-me"
 
 [grok]
 # 完整浏览器 Cookie 字符串（含 sso/sso-rw/x-userid/cf_clearance/__cf_bm 等）
-# 推荐通过 Web UI 的"导入 cURL"功能填入；cf_clearance/__cf_bm 后续由 FlareSolverr 自动刷新
+# 推荐通过 Web UI 的"导入 cURL"功能填入；配置 FlareSolverr 后可自动刷新 Cloudflare Cookie
 cookie = ""
 
-# 必须与 FlareSolverr 内置 Chrome 版本一致；当前 FlareSolverr 3.4.6 = Chromium 142
+# 通常不用手改；导入 cURL / FlareSolverr 刷新时会同步更新
 user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
 browser = "chrome142"
 
@@ -20,8 +20,8 @@ proxy = ""
 
 timeout_seconds = 120.0
 
-# FlareSolverr 实例地址（必填，否则无法自动刷 cf_clearance，只能 fallback 到 /rest/skills 心跳）
-flaresolverr_url = "http://flaresolverr:8191"
+# FlareSolverr 实例地址；没有部署就留空，服务会退化为心跳保活
+flaresolverr_url = ""
 
 # 可选：FlareSolverr 通过此 HTTP 代理访问 grok.com（用于把 SOCKS5+认证转 HTTP）
 # 远程 FlareSolverr 与 SOCKS5 同主机时留空，让其使用自身网络出口

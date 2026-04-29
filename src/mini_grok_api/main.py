@@ -18,10 +18,11 @@ from typing import Annotated, Literal
 
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Form, Header, HTTPException
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi import Cookie, Depends, FastAPI, Form, Header, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
+from .auth_session import CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, session_store
 from .config import Settings, SettingsStore, load_settings, mask_secret
 from .db import LogDB
 from .curl_import import CurlImportError, parse_grok_curl
@@ -53,7 +54,16 @@ from .grok_client import (
 from .image_stream import ImageStreamWorker, StreamConfig
 from .models import get_model, list_models, model_to_openai
 from .monitor import Monitor
-from .openai_compat import chat_response, error_payload, response_id, sse_data, sse_error, stream_chunk
+from .openai_compat import (
+    chat_response,
+    error_payload,
+    response_id,
+    sse_data,
+    sse_error,
+    stream_chunk,
+    stream_usage_chunk,
+    type_for_status,
+)
 from .schemas import ChatCompletionRequest, ImageGenerationRequest, ImageStreamStartRequest, TaskQueueAddRequest, VideoGenerationRequest
 from .task_queue import TaskQueue
 from .ws_gateway import WsGateway
@@ -64,6 +74,37 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)],
 )
 logger = logging.getLogger(__name__)
+
+
+class _SecretsRedactFilter(logging.Filter):
+    """access log 脱敏：把 ?api_key= / &api_key= / Authorization 头 / x-api-key 头里的值替换成 ***。
+
+    主要覆盖 uvicorn.access logger 与本服务自己的 logger，防止历史前端 / 老脚本
+    把 api_key 拼在 URL 里时漏到 stdout。
+    """
+
+    _PATTERNS = (
+        re.compile(r"([?&]api_key=)[^&\s\"']+", re.IGNORECASE),
+        re.compile(r"(authorization:\s*bearer\s+)\S+", re.IGNORECASE),
+        re.compile(r"(x-api-key:\s*)\S+", re.IGNORECASE),
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        original = msg
+        for pat in self._PATTERNS:
+            msg = pat.sub(r"\1***", msg)
+        if msg != original:
+            record.msg = msg
+            record.args = ()
+        return True
+
+
+for _name in ("uvicorn.access", "uvicorn", __name__):
+    logging.getLogger(_name).addFilter(_SecretsRedactFilter())
 
 _TAG_OPENAI = "OpenAI 兼容"
 _TAG_STREAM = "连续生图"
@@ -502,25 +543,69 @@ def _settings() -> Settings:
 
 
 def _require_api_key(
+    request: Request,
     settings: Annotated[Settings, Depends(_settings)],
     authorization: Annotated[str | None, Header()] = None,
     x_api_key: Annotated[str | None, Header(alias="x-api-key")] = None,
+    xgate_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE)] = None,
+    xgate_csrf_cookie: Annotated[str | None, Cookie(alias=CSRF_COOKIE)] = None,
+    csrf_header: Annotated[str | None, Header(alias=CSRF_HEADER)] = None,
 ) -> None:
+    """三通道鉴权：Bearer Header / x-api-key Header / HttpOnly Cookie。
+
+    - 任一通道通过即可放行，前两者面向 API 客户端，cookie 面向浏览器前端。
+    - cookie 通道额外要求 CSRF Double Submit：所有非 GET/HEAD/OPTIONS 请求
+      必须同时携带 `xgate_csrf` cookie 与 `X-CSRF-Token` header 且两者相等。
+    - api_key 留空时跳过认证（仅限受信任内网，启动时已 warning 提醒）。
+    """
     if not settings.api_key:
         logger.warning("api_key 未配置，跳过认证")
         return
+
+    # 通道 1/2：Header
     bearer = ""
     if authorization and authorization.lower().startswith("bearer "):
         bearer = authorization[7:].strip()
     candidates = [item for item in (bearer, x_api_key) if item]
-    if not any(secrets.compare_digest(settings.api_key, item) for item in candidates):
+    if any(secrets.compare_digest(settings.api_key, item) for item in candidates):
+        return
+
+    # 通道 3：HttpOnly Cookie
+    sess = session_store.get(xgate_session)
+    if sess is not None:
+        method = (request.method or "GET").upper()
+        if method in {"GET", "HEAD", "OPTIONS"}:
+            return
+        # 状态修改请求必须做 CSRF 校验
+        if (
+            xgate_csrf_cookie
+            and csrf_header
+            and secrets.compare_digest(xgate_csrf_cookie, csrf_header)
+            and secrets.compare_digest(sess.csrf, csrf_header)
+        ):
+            return
         raise HTTPException(
-            status_code=401,
-            detail=error_payload("Invalid API key", error_type="authentication_error")["error"],
+            status_code=403,
+            detail=error_payload(
+                "CSRF token missing or invalid",
+                error_type="permission_error",
+                code="csrf_failed",
+            )["error"],
         )
+
+    raise HTTPException(
+        status_code=401,
+        detail=error_payload("Invalid API key", error_type="authentication_error")["error"],
+    )
 
 
 def _extract_prompt(req: ChatCompletionRequest) -> str:
+    """把 OpenAI messages 拍平成单段 prompt 文本。
+
+    多模态块的处理：image_url / input_audio 等非文本块当前底层 Grok 通道
+    不支持，转成 [image]/[audio] 占位文本，让请求继续走通而不是 400。
+    未知块类型直接跳过（保兼容性，不报错）。
+    """
     parts: list[str] = []
     for message in req.messages:
         role = message.role
@@ -531,14 +616,22 @@ def _extract_prompt(req: ChatCompletionRequest) -> str:
                 parts.append(f"[{role}]: {text}")
             continue
         if isinstance(content, list):
+            segments: list[str] = []
             for block in content:
+                if not isinstance(block, dict):
+                    continue
                 block_type = block.get("type")
                 if block_type == "text":
                     text = str(block.get("text") or "").strip()
                     if text:
-                        parts.append(f"[{role}]: {text}")
+                        segments.append(text)
                 elif block_type == "image_url":
-                    raise ValueError("image_url input is not implemented yet")
+                    segments.append("[image]")
+                elif block_type in ("input_audio", "audio"):
+                    segments.append("[audio]")
+            joined = " ".join(segments).strip()
+            if joined:
+                parts.append(f"[{role}]: {joined}")
     return "\n\n".join(parts).strip()
 
 
@@ -548,9 +641,9 @@ def _error_response(message: str, status: int, *, code: str | None = None) -> JS
     if status == 401:
         status = 502
         code = code or "upstream_unauthorized"
-    err_type = "invalid_request_error" if status < 500 else "server_error"
+    err_type = type_for_status(status)
     if code in {"cloudflare_challenge", "missing_grok_cookie", "upstream_unauthorized"}:
-        err_type = "upstream_error"
+        err_type = "api_error"
     return JSONResponse(
         error_payload(message, error_type=err_type, code=code),
         status_code=status,
@@ -582,6 +675,116 @@ async def health(settings: Annotated[Settings, Depends(_settings)]) -> dict:
         "cookie_configured": bool(settings.grok_cookie),
         "browser": settings.grok_browser,
     }
+
+
+# ---------------------------------------------------------------------------
+# Browser auth: HttpOnly cookie session
+# 前端登录页用 api_key 换取 session cookie，避免把 api_key 暴露在 URL / DOM 中。
+# ---------------------------------------------------------------------------
+
+
+def _set_session_cookies(response: Response, request: Request, token: str, csrf: str, max_age: int = 86400) -> None:
+    # Secure 仅在 https 下设置；本地 http 开发不能设 Secure 否则浏览器拒绝写入。
+    secure = (request.url.scheme == "https") or (request.headers.get("x-forwarded-proto") == "https")
+    response.set_cookie(
+        key=SESSION_COOKIE, value=token, httponly=True, secure=secure,
+        samesite="strict", path="/", max_age=max_age,
+    )
+    # CSRF cookie 需要 JS 可读，不设 HttpOnly
+    response.set_cookie(
+        key=CSRF_COOKIE, value=csrf, httponly=False, secure=secure,
+        samesite="strict", path="/", max_age=max_age,
+    )
+
+
+def _clear_session_cookies(response: Response) -> None:
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    response.delete_cookie(CSRF_COOKIE, path="/")
+
+
+@app.post("/v1/auth/login", tags=[_TAG_ADMIN], summary="用 api_key 换取 HttpOnly session cookie",
+          description=(
+              "前端登录入口。请求体（form 或 JSON）携带 `api_key`，校验通过后下发：\n"
+              "- `xgate_session`: HttpOnly + SameSite=Strict 的会话 cookie\n"
+              "- `xgate_csrf`: 普通 cookie，前端需在状态修改请求里回填到 `X-CSRF-Token` header\n\n"
+              "默认 24h 过期。"
+          ))
+async def auth_login(
+    request: Request,
+    settings: Annotated[Settings, Depends(_settings)],
+    api_key: Annotated[str, Form()] = "",
+) -> JSONResponse:
+    submitted = (api_key or "").strip()
+    if not submitted:
+        # 兼容 JSON body
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                submitted = str(body.get("api_key") or "").strip()
+        except Exception:
+            pass
+    if not settings.api_key:
+        return JSONResponse(
+            error_payload("Server has no api_key configured", error_type="server_error", code="auth_disabled"),
+            status_code=503,
+        )
+    if not submitted or not secrets.compare_digest(settings.api_key, submitted):
+        return JSONResponse(
+            error_payload("Invalid API key", error_type="authentication_error"),
+            status_code=401,
+        )
+    sess = session_store.create()
+    resp = JSONResponse({"ok": True, "csrf_token": sess.csrf, "expires_in": 86400})
+    _set_session_cookies(resp, request, sess.token, sess.csrf)
+    return resp
+
+
+@app.post("/v1/auth/logout", tags=[_TAG_ADMIN], summary="登出，撤销 session cookie",
+          description=(
+              "撤销当前 cookie session 并清除浏览器 cookie。\n\n"
+              "**CSRF**：若客户端持有有效 session，必须同时携带匹配的 `xgate_csrf` cookie 与 "
+              "`X-CSRF-Token` header（Double Submit）。无 session 的请求幂等放行（仅清 cookie）。"
+          ))
+async def auth_logout(
+    xgate_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE)] = None,
+    xgate_csrf_cookie: Annotated[str | None, Cookie(alias=CSRF_COOKIE)] = None,
+    csrf_header: Annotated[str | None, Header(alias=CSRF_HEADER)] = None,
+) -> JSONResponse:
+    sess = session_store.get(xgate_session)
+    if sess is not None:
+        # 有有效 session 才需要 CSRF 校验：防止恶意站点 CSRF 把用户登出。
+        if not (
+            xgate_csrf_cookie
+            and csrf_header
+            and secrets.compare_digest(xgate_csrf_cookie, csrf_header)
+            and secrets.compare_digest(sess.csrf, csrf_header)
+        ):
+            return JSONResponse(
+                error_payload(
+                    "CSRF token missing or invalid",
+                    error_type="permission_error",
+                    code="csrf_failed",
+                ),
+                status_code=403,
+            )
+    revoked = session_store.revoke(xgate_session)
+    resp = JSONResponse({"ok": True, "revoked": revoked})
+    _clear_session_cookies(resp)
+    return resp
+
+
+@app.get("/v1/auth/whoami", tags=[_TAG_ADMIN], summary="检查当前 session 是否有效",
+         description="供前端启动时探测登录态：有效 cookie 返回 200 + csrf_token；无效返回 401。")
+async def auth_whoami(
+    xgate_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE)] = None,
+) -> JSONResponse:
+    sess = session_store.get(xgate_session)
+    if sess is None:
+        return JSONResponse(
+            error_payload("Not logged in", error_type="authentication_error"),
+            status_code=401,
+        )
+    return JSONResponse({"ok": True, "csrf_token": sess.csrf, "expires_at": int(sess.expires_at)})
 
 
 @app.get("/v1/models", tags=[_TAG_OPENAI], summary="列出所有模型",
@@ -1108,6 +1311,12 @@ async def images_generations(
         return _error_response(f"Model {req.model!r} not found or not an image model", 404, code="model_not_found")
     if not req.prompt.strip():
         return _error_response("prompt cannot be empty", 400, code="invalid_prompt")
+    if req.response_format and req.response_format != "url":
+        return _error_response(
+            f"response_format={req.response_format!r} is not supported, only 'url' is available",
+            400,
+            code="unsupported_parameter",
+        )
 
     monitor.record_start()
     prompt = req.prompt.strip()
@@ -1169,7 +1378,7 @@ async def images_generations(
     summary="聊天补全（Chat Completions）",
     description=(
         "兼容 OpenAI `POST /v1/chat/completions`，支持流式（`stream=true`）与非流式。\n\n"
-        "**可用模型**：见 `GET /v1/models`，默认对话模型为 `grok-3`。\n\n"
+        "**可用模型**：见 `GET /v1/models`，默认对话模型为 `grok-4.20-auto`。\n\n"
         "**流式响应**：`text/event-stream`，每行格式为 `data: {...}`，结束时发送 `data: [DONE]`。\n\n"
         "**非流式响应**：标准 OpenAI ChatCompletion 对象。"
     ),
@@ -1193,19 +1402,47 @@ async def chat_completions(
         return _error_response("message content cannot be empty", 400, code="empty_message")
 
     monitor.record_start()
+    include_usage = bool(req.stream_options and req.stream_options.include_usage)
+    max_out = req.max_completion_tokens or req.max_tokens
     if req.stream:
         rid = response_id()
         t0 = time.monotonic()
 
         async def generate() -> AsyncGenerator[str, None]:
             chunks: list[str] = []
+            finish_reason = "stop"
+            first_chunk = True
+            # max_out 是目标 token 数；用 4 字符≈1 token 的粗估转成字符上限
+            char_budget = max_out * 4 if max_out is not None else None
             try:
                 async for delta in stream_chat(settings, message=prompt, mode_id=spec.mode_id):
                     if delta.done:
                         break
-                    chunks.append(delta.content)
-                    yield sse_data(stream_chunk(rid, req.model, delta.content))
-                yield sse_data(stream_chunk(rid, req.model, "", finish_reason="stop"))
+                    piece = delta.content
+                    if char_budget is not None:
+                        emitted = sum(len(c) for c in chunks)
+                        remaining = char_budget - emitted
+                        if remaining <= 0:
+                            finish_reason = "length"
+                            break
+                        if len(piece) > remaining:
+                            piece = piece[:remaining]
+                            chunks.append(piece)
+                            yield sse_data(stream_chunk(
+                                rid, req.model, piece,
+                                role="assistant" if first_chunk else None,
+                            ))
+                            finish_reason = "length"
+                            break
+                    chunks.append(piece)
+                    yield sse_data(stream_chunk(
+                        rid, req.model, piece,
+                        role="assistant" if first_chunk else None,
+                    ))
+                    first_chunk = False
+                yield sse_data(stream_chunk(rid, req.model, "", finish_reason=finish_reason, role=None))
+                if include_usage:
+                    yield sse_data(stream_usage_chunk(rid, req.model, prompt, "".join(chunks)))
                 yield "data: [DONE]\n\n"
                 monitor.record_success()
                 log_db.log_chat(
@@ -1220,7 +1457,7 @@ async def chat_completions(
                     request_id=rid, model=req.model, prompt=prompt,
                     status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
                 )
-                yield sse_error(str(exc), error_type="upstream_error", code=code)
+                yield sse_error(str(exc), error_type="api_error", code=code)
                 yield "data: [DONE]\n\n"
             except Exception as exc:
                 monitor.record_failure(500, str(exc))
@@ -1258,12 +1495,71 @@ async def chat_completions(
         )
         return _error_response("Internal server error", 500)
 
+    finish_reason = "stop"
+    if max_out is not None and max(1, len(content) // 4) >= max_out:
+        finish_reason = "length"
+        # 按字符近似截断到目标 token 上限
+        content = content[: max_out * 4]
     monitor.record_success()
     log_db.log_chat(
         request_id=rid, model=req.model, prompt=prompt, response=content,
         status="success", duration_ms=int((time.monotonic() - t0) * 1000),
     )
-    return JSONResponse(chat_response(req.model, content, prompt))
+    return JSONResponse(chat_response(req.model, content, prompt, rid=rid, finish_reason=finish_reason))
+
+
+# ---------------------------------------------------------------------------
+# OpenAI 兼容占位：未实现的 endpoint 返回 501 + not_implemented，
+# 比 404 对客户端更友好（说明语义已知但本服务不支持）。
+# ---------------------------------------------------------------------------
+
+def _not_implemented(endpoint: str) -> JSONResponse:
+    return JSONResponse(
+        error_payload(
+            f"{endpoint} is not implemented by xGate",
+            error_type="invalid_request_error",
+            code="not_implemented",
+        ),
+        status_code=501,
+    )
+
+
+@app.post("/v1/embeddings", tags=[_TAG_OPENAI], summary="（未实现）Embeddings",
+          description="xGate 不提供 embedding 模型；调用返回 501 / not_implemented，方便客户端明确区分。",
+          dependencies=[Depends(_require_api_key)])
+async def embeddings_stub() -> JSONResponse:
+    return _not_implemented("/v1/embeddings")
+
+
+@app.post("/v1/completions", tags=[_TAG_OPENAI], summary="（未实现）Legacy Completions",
+          description="legacy 文本补全接口未实现，请改用 /v1/chat/completions。",
+          dependencies=[Depends(_require_api_key)])
+async def completions_stub() -> JSONResponse:
+    return _not_implemented("/v1/completions")
+
+
+@app.post("/v1/moderations", tags=[_TAG_OPENAI], summary="（未实现）Moderations",
+          dependencies=[Depends(_require_api_key)])
+async def moderations_stub() -> JSONResponse:
+    return _not_implemented("/v1/moderations")
+
+
+@app.post("/v1/audio/speech", tags=[_TAG_OPENAI], summary="（未实现）TTS",
+          dependencies=[Depends(_require_api_key)])
+async def audio_speech_stub() -> JSONResponse:
+    return _not_implemented("/v1/audio/speech")
+
+
+@app.post("/v1/audio/transcriptions", tags=[_TAG_OPENAI], summary="（未实现）STT",
+          dependencies=[Depends(_require_api_key)])
+async def audio_transcriptions_stub() -> JSONResponse:
+    return _not_implemented("/v1/audio/transcriptions")
+
+
+@app.post("/v1/audio/translations", tags=[_TAG_OPENAI], summary="（未实现）Audio translations",
+          dependencies=[Depends(_require_api_key)])
+async def audio_translations_stub() -> JSONResponse:
+    return _not_implemented("/v1/audio/translations")
 
 
 # ---------------------------------------------------------------------------
@@ -1955,8 +2251,10 @@ async def update_config(
     log_retention_days: Annotated[str, Form()] = "",
 ) -> JSONResponse:
     patch: dict[str, object] = {}
+    new_api_key: str | None = None
     if api_key.strip():
-        patch["api_key"] = api_key.strip()
+        new_api_key = api_key.strip()
+        patch["api_key"] = new_api_key
     if grok_cookie.strip():
         patch["grok_cookie"] = grok_cookie.strip()
     if grok_user_agent.strip():
@@ -1972,7 +2270,13 @@ async def update_config(
         except ValueError:
             pass
     if patch:
+        old_api_key = settings_store.get().api_key
         settings_store.update(**patch)
+        # api_key 轮换：撤销所有 cookie session，强制所有浏览器重新登录。
+        # 这里在 update 之后做，确保配置已落盘。
+        if new_api_key is not None and new_api_key != old_api_key:
+            revoked = session_store.revoke_all()
+            logger.info("api_key rotated; revoked %d active session(s)", revoked)
     return JSONResponse({"ok": True, "message": "配置已更新。"})
 
 
@@ -2080,30 +2384,20 @@ async def grok_asset_delete(
 @app.get("/v1/grok/assets/download", tags=[_TAG_FILES], summary="下载 Grok File",
          description=(
              "通过服务端代理从 assets.grok.com 流式拉取文件。\n\n"
-             "支持两种鉴权方式：HTTP Header `Authorization: Bearer xxx`，或 query param `?api_key=xxx`（供 <img>/<video> 直接使用）。\n\n"
+             "鉴权：Header `Authorization: Bearer xxx` / `X-Api-Key: xxx` / 浏览器 HttpOnly cookie 三选一。\n\n"
+             "**已移除** `?api_key=xxx` query 鉴权（避免 access log / DevTools / 截图泄露），"
+             "前端浏览器走 cookie 通道；其它客户端用 Header。\n\n"
              "查询参数：\n"
              "- `inline=1`: 不触发浏览器下载（去掉 Content-Disposition），适合 <img src> 渐进式渲染。\n"
              "- `inline=0`(默认): 加 Content-Disposition: attachment 触发浏览器保存。"
-         ))
+         ),
+         dependencies=[Depends(_require_api_key)])
 async def grok_asset_download(
     settings: Annotated[Settings, Depends(_settings)],
     key: str = "",
     filename: str = "file",
     inline: int = 0,
-    api_key: str = "",
-    authorization: Annotated[str | None, Header()] = None,
 ) -> StreamingResponse:
-    # 双通道鉴权：Header 或 query
-    cfg_key = settings_store.get().api_key
-    if cfg_key:
-        token = ""
-        if authorization and authorization.lower().startswith("bearer "):
-            token = authorization[7:].strip()
-        elif api_key:
-            token = api_key.strip()
-        if not token or not secrets.compare_digest(token, cfg_key):
-            return JSONResponse({"error": {"message": "Invalid API key", "type": "authentication_error"}}, status_code=401)
-
     if not key:
         return JSONResponse({"error": "key is required"}, status_code=400)
     # 防御：拒绝 prompt:// / scheme:// 等伪 key（LLM 透传产物或意外字符串）

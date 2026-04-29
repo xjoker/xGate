@@ -32,25 +32,23 @@ def get_model(model_id: str) -> ModelSpec | None:
     return _BY_ID.get(model_id)
 
 
-def list_models() -> list[dict]:
-    created = int(time.time())
-    return [
-        {
-            "id": item.model_id,
-            "object": "model",
-            "created": created,
-            "owned_by": "xai",
-            "name": item.name,
-        }
-        for item in MODELS
-    ]
-
-
-def model_to_openai(spec: ModelSpec) -> dict:
+def _model_dict(spec: ModelSpec, created: int) -> dict:
     return {
         "id": spec.model_id,
         "object": "model",
-        "created": int(time.time()),
+        "created": created,
         "owned_by": "xai",
         "name": spec.name,
+        "permission": [],
+        "root": spec.model_id,
+        "parent": None,
     }
+
+
+def list_models() -> list[dict]:
+    created = int(time.time())
+    return [_model_dict(item, created) for item in MODELS]
+
+
+def model_to_openai(spec: ModelSpec) -> dict:
+    return _model_dict(spec, int(time.time()))
