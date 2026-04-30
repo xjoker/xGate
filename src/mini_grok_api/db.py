@@ -114,6 +114,19 @@ class LogDB:
                     expires_at REAL NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_sessions_exp ON sessions(expires_at);
+                CREATE TABLE IF NOT EXISTS mcp_logs (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    request_id  TEXT    NOT NULL,
+                    created_at  REAL    NOT NULL,
+                    tool        TEXT    NOT NULL DEFAULT '',
+                    model       TEXT    NOT NULL DEFAULT '',
+                    prompt      TEXT    NOT NULL DEFAULT '',
+                    response    TEXT,
+                    status      TEXT    NOT NULL DEFAULT 'success',
+                    duration_ms INTEGER,
+                    error       TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_mcp_ts ON mcp_logs(created_at);
                 CREATE TABLE IF NOT EXISTS grok_assets (
                     asset_id          TEXT    PRIMARY KEY,
                     asset_key         TEXT    NOT NULL DEFAULT '',
@@ -278,6 +291,29 @@ class LogDB:
         except Exception as exc:
             logger.warning("log_video failed: %s", exc)
 
+    def log_mcp(
+        self,
+        *,
+        request_id: str,
+        tool: str,
+        model: str = "",
+        prompt: str = "",
+        response: str | None = None,
+        status: str,
+        duration_ms: int,
+        error: str | None = None,
+    ) -> None:
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO mcp_logs"
+                    " (request_id,created_at,tool,model,prompt,response,status,duration_ms,error)"
+                    " VALUES (?,?,?,?,?,?,?,?,?)",
+                    (request_id, time.time(), tool, model, prompt, response, status, duration_ms, error),
+                )
+        except Exception as exc:
+            logger.warning("log_mcp failed: %s", exc)
+
     def log_system(
         self,
         *,
@@ -370,12 +406,14 @@ class LogDB:
         to_ts: float | None = None,
     ) -> tuple[list[dict], int]:
         tables: list[tuple[str, str]] = []
-        if log_type in ("all", "chat"):
+        if log_type in ("all", "chat", "dialog"):
             tables.append(("chat_logs", "chat"))
-        if log_type in ("all", "image"):
+        if log_type in ("all", "image", "media"):
             tables.append(("image_logs", "image"))
-        if log_type in ("all", "video"):
+        if log_type in ("all", "video", "media"):
             tables.append(("video_logs", "video"))
+        if log_type in ("all", "dialog"):
+            tables.append(("mcp_logs", "mcp"))
 
         all_rows: list[dict] = []
         total = 0
@@ -855,3 +893,7 @@ class LogDB:
         if n:
             logger.info("log cleanup: removed %d records (>%d days)", n, retention_days)
         return n
+
+
+# 全局单例，供 main.py 和 mcp_server.py 共享同一实例
+log_db = LogDB()

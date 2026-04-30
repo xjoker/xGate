@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 from .auth_session import CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, session_store
 from .config import Settings, SettingsStore, load_settings, mask_secret
-from .db import LogDB
+from .db import log_db
 from .curl_import import CurlImportError, parse_grok_curl
 from .grok_client import (
     GrokClientError,
@@ -133,7 +133,6 @@ monitor = Monitor()
 ws_gateway = WsGateway()
 image_stream_worker = ImageStreamWorker()
 task_queue = TaskQueue()
-log_db = LogDB()
 _mcp_app = create_mcp_app(settings_store.get)
 
 
