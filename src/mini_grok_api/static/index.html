@@ -1119,7 +1119,7 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
 
   <!-- Quota section -->
   <div style="font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">配额监控</div>
-  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px" id="h-quota-grid">
+  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:20px" id="h-quota-grid">
     <div class="settings-card" style="padding:14px 16px">
       <div style="font-size:11px;font-weight:600;color:#6b7280;margin-bottom:8px">AUTO 模式</div>
       <div style="display:flex;align-items:baseline;gap:4px;margin-bottom:4px">
@@ -1141,17 +1141,6 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
         <div id="h-q-fast-bar" style="height:100%;width:0%;background:#3b82f6;transition:width .3s"></div>
       </div>
       <div style="font-size:11px;color:#6b7280"><span id="h-q-fast-pct">—</span> 已用</div>
-    </div>
-    <div class="settings-card" style="padding:14px 16px">
-      <div style="font-size:11px;font-weight:600;color:#6b7280;margin-bottom:8px">THINK 模式</div>
-      <div style="display:flex;align-items:baseline;gap:4px;margin-bottom:4px">
-        <span id="h-q-think-rem" style="font-size:24px;font-weight:700">—</span>
-        <span id="h-q-think-total" style="font-size:12px;color:#9ca3af">/ —</span>
-      </div>
-      <div style="height:4px;border-radius:2px;background:#e5e7eb;overflow:hidden;margin-bottom:6px">
-        <div id="h-q-think-bar" style="height:100%;width:0%;background:#8b5cf6;transition:width .3s"></div>
-      </div>
-      <div style="font-size:11px;color:#6b7280"><span id="h-q-think-pct">—</span> 已用</div>
     </div>
   </div>
 
@@ -2982,9 +2971,8 @@ window.loadHome = async function() {
     const vEl = document.getElementById('h-version');
     if (vEl && d.version) vEl.textContent = 'v' + d.version;
     // quotas
-    _setQuotaCard('auto',  '#059669', d.quotas?.auto);
-    _setQuotaCard('fast',  '#3b82f6', d.quotas?.fast);
-    _setQuotaCard('think', '#8b5cf6', d.quotas?.think);
+    _setQuotaCard('auto', '#059669', d.quotas?.auto);
+    _setQuotaCard('fast', '#3b82f6', d.quotas?.fast);
     // tasks
     const by = d.tasks?.by_status || {};
     const $ = id => { const e = document.getElementById(id); return e ? (v => { e.textContent = v; }) : () => {}; };

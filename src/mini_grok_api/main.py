@@ -2037,7 +2037,6 @@ _RATE_LIMITS_URL = "https://grok.com/rest/rate-limits"
 _QUOTA_MODES = {
     "auto": 0,
     "fast": 1,
-    "think": 2,
 }
 
 # Image generation uses the "auto" quota bucket
