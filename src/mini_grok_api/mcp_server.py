@@ -22,6 +22,7 @@ import logging
 import time
 import uuid
 from collections.abc import Callable
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import quote as _url_quote
@@ -402,14 +403,22 @@ async def grok_quota(model: str = "grok-4.20-auto") -> dict:
 
 # ── 图片 / 视频 / 文件 helpers ─────────────────────────────────────────────────
 
+# 由 _MCPAwareApp 在每次 MCP 请求进入时设置，携带客户端实际访问的 base URL（含协议和端口）
+request_base_url: ContextVar[str] = ContextVar("request_base_url", default="")
+
+
 def _proxy_url(assets_url: str) -> str:
     """将 assets.grok.com URL 转为 xGate /v1/files/proxy 代理 URL。"""
     s = _settings()
-    if s.public_base_url:
-        base = s.public_base_url.rstrip("/")
-    else:
-        host = "localhost" if s.server_host in ("0.0.0.0", "") else s.server_host
-        base = f"http://{host}:{s.server_port}"
+    base = (
+        request_base_url.get()
+        or s.public_base_url.rstrip("/")
+        or (
+            "http://localhost"
+            if s.server_host in ("0.0.0.0", "")
+            else f"http://{s.server_host}"
+        ) + f":{s.server_port}"
+    )
     return f"{base}/v1/files/proxy?url={_url_quote(assets_url, safe='')}"
 
 
@@ -512,11 +521,15 @@ async def grok_imagine_video(
 
     if serve_path:
         s = _settings()
-        if s.public_base_url:
-            base = s.public_base_url.rstrip("/")
-        else:
-            host = "localhost" if s.server_host in ("0.0.0.0", "") else s.server_host
-            base = f"http://{host}:{s.server_port}"
+        base = (
+            request_base_url.get()
+            or s.public_base_url.rstrip("/")
+            or (
+                "http://localhost"
+                if s.server_host in ("0.0.0.0", "")
+                else f"http://{s.server_host}"
+            ) + f":{s.server_port}"
+        )
         video_url = f"{base}{serve_path}"
     else:
         video_url = None

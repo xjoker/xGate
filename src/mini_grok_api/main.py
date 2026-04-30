@@ -67,7 +67,7 @@ from .openai_compat import (
 from .schemas import ChatCompletionRequest, ImageGenerationRequest, ImageStreamStartRequest, TaskQueueAddRequest, VideoGenerationRequest
 from .task_queue import TaskQueue
 from .ws_gateway import WsGateway
-from .mcp_server import mcp, create_mcp_app, create_sse_app
+from .mcp_server import mcp, create_mcp_app, create_sse_app, request_base_url as _mcp_request_base_url
 
 logging.basicConfig(
     level=logging.INFO,
@@ -208,15 +208,32 @@ class _MCPAwareApp:
                 new_scope = dict(scope)
                 new_scope["path"] = path[4:]  # /mcp/sse → /sse, /mcp/messages → /messages
                 new_scope["root_path"] = scope.get("root_path", "") + "/mcp"
-                await self._sse(new_scope, receive, send)
+                token = _mcp_request_base_url.set(self._extract_base_url(scope))
+                try:
+                    await self._sse(new_scope, receive, send)
+                finally:
+                    _mcp_request_base_url.reset(token)
                 return
             if path == "/mcp" or path.startswith("/mcp/"):
                 new_scope = dict(scope)
                 new_scope["path"] = path[4:] or "/"
                 new_scope["root_path"] = scope.get("root_path", "") + "/mcp"
-                await self._mcp(new_scope, receive, send)
+                token = _mcp_request_base_url.set(self._extract_base_url(scope))
+                try:
+                    await self._mcp(new_scope, receive, send)
+                finally:
+                    _mcp_request_base_url.reset(token)
                 return
         await self._fastapi(scope, receive, send)
+
+    @staticmethod
+    def _extract_base_url(scope: Any) -> str:
+        headers = dict(scope.get("headers", []))
+        host = headers.get(b"host", b"").decode()
+        if not host:
+            return ""
+        scheme = "https" if scope.get("scheme") == "https" else "http"
+        return f"{scheme}://{host}"
 
 
 if settings_store.get().mcp_enabled:
