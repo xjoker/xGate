@@ -67,7 +67,7 @@ from .openai_compat import (
 from .schemas import ChatCompletionRequest, ImageGenerationRequest, ImageStreamStartRequest, TaskQueueAddRequest, VideoGenerationRequest
 from .task_queue import TaskQueue
 from .ws_gateway import WsGateway
-from .mcp_server import mcp, create_mcp_app
+from .mcp_server import mcp, create_mcp_app, create_sse_app
 
 logging.basicConfig(
     level=logging.INFO,
@@ -191,16 +191,25 @@ _STATIC_DIR.mkdir(exist_ok=True)
 
 class _MCPAwareApp:
     """Top-level ASGI: /mcp paths → MCP handler (strips prefix, no 307 redirect).
+    /mcp/sse + /mcp/messages → SSE transport (for mcp-remote / stdio bridge clients).
+    /mcp → Streamable HTTP transport (Claude Code, native MCP 2025-06-18 clients).
     All other scopes (incl. lifespan) → FastAPI app.
     """
 
-    def __init__(self, fastapi_app: Any, mcp_app: Any) -> None:
+    def __init__(self, fastapi_app: Any, mcp_app: Any, sse_app: Any) -> None:
         self._fastapi = fastapi_app
         self._mcp = mcp_app
+        self._sse = sse_app
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope.get("type") in ("http", "websocket"):
             path = scope.get("path", "")
+            if path == "/mcp/sse" or path.startswith("/mcp/sse/") or path.startswith("/mcp/messages"):
+                new_scope = dict(scope)
+                new_scope["path"] = path[4:]  # /mcp/sse → /sse, /mcp/messages → /messages
+                new_scope["root_path"] = scope.get("root_path", "") + "/mcp"
+                await self._sse(new_scope, receive, send)
+                return
             if path == "/mcp" or path.startswith("/mcp/"):
                 new_scope = dict(scope)
                 new_scope["path"] = path[4:] or "/"
@@ -211,8 +220,9 @@ class _MCPAwareApp:
 
 
 if settings_store.get().mcp_enabled:
-    _top_app: Any = _MCPAwareApp(app, _mcp_app)
-    logger.info("MCP server mounted at /mcp (Streamable HTTP, 9 tools)")
+    _sse_mcp_app = create_sse_app()
+    _top_app: Any = _MCPAwareApp(app, _mcp_app, _sse_mcp_app)
+    logger.info("MCP server mounted at /mcp (Streamable HTTP) + /mcp/sse (SSE), 9 tools")
 else:
     _top_app = app
 

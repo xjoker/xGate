@@ -636,7 +636,16 @@ class _BearerAuthMiddleware:
 
 
 def create_mcp_app(get_settings: Callable[[], Settings]) -> Any:
-    """创建 MCP ASGI 应用（含 Bearer 鉴权中间件）。调用后 mcp.session_manager 可用。"""
+    """创建 Streamable HTTP MCP ASGI 应用（含 Bearer 鉴权中间件）。调用后 mcp.session_manager 可用。"""
     configure(get_settings)
     inner = mcp.streamable_http_app()
+    return _BearerAuthMiddleware(inner)
+
+
+def create_sse_app() -> Any:
+    """创建 SSE MCP ASGI 应用（供 mcp-remote 等 stdio→SSE 桥接客户端使用）。
+
+    挂载于 /mcp/sse（GET）和 /mcp/messages（POST），与 Streamable HTTP 端点 /mcp 并存。
+    """
+    inner = mcp.sse_app()
     return _BearerAuthMiddleware(inner)

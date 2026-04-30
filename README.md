@@ -293,7 +293,7 @@ claude mcp add --transport http xgate http://127.0.0.1:8024/mcp \
 
 ### Codex
 
-Codex CLI 的 `codex mcp add` 命令仅支持 stdio transport，xGate 使用 Streamable HTTP，因此需手动编辑配置文件。
+**方式一：编辑配置文件**
 
 编辑 `~/.codex/config.toml`，在 `[mcp_servers]` 下追加：
 
@@ -304,7 +304,23 @@ transport = { type = "streamable_http", url = "http://127.0.0.1:8024/mcp" }
 bearer_token_env_var = "XGATE_API_KEY"
 ```
 
-然后在终端导出 key：`export XGATE_API_KEY=你的-api-key`
+然后导出 key：`export XGATE_API_KEY=你的-api-key`
+
+**方式二：CLI 命令（通过 mcp-remote 桥接）**
+
+`codex mcp add` 只支持 stdio transport。xGate 提供 `/mcp/sse` SSE 端点，配合 [`mcp-remote`](https://www.npmjs.com/package/mcp-remote)（stdio → HTTP 桥接）可用 CLI 一键添加：
+
+```bash
+# 需要 Node.js（用于 npx）；mcp-remote 作为桥接层，无需单独安装
+export XGATE_API_KEY=你的-api-key
+codex mcp add xgate \
+  --env XGATE_API_KEY="$XGATE_API_KEY" \
+  -- npx -y mcp-remote http://127.0.0.1:8024/mcp/sse \
+     --header "Authorization:${XGATE_API_KEY}" \
+     --allow-http
+```
+
+验证：`codex mcp list`
 
 ### 连通性验证
 
