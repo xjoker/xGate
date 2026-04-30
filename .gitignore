@@ -39,3 +39,8 @@ data/grok-files/
 PROMPT.md
 AGENTS.md
 docs/reference-map.md
+MCP_DEVELOPMENT.md
+tests/_probe_raw_sse.py
+
+# Test fixtures with real API captures (contain third-party user data, store locally only)
+tests/fixtures/

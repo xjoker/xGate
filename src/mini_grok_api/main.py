@@ -67,6 +67,7 @@ from .openai_compat import (
 from .schemas import ChatCompletionRequest, ImageGenerationRequest, ImageStreamStartRequest, TaskQueueAddRequest, VideoGenerationRequest
 from .task_queue import TaskQueue
 from .ws_gateway import WsGateway
+from .mcp_server import mcp, create_mcp_app
 
 logging.basicConfig(
     level=logging.INFO,
@@ -133,6 +134,7 @@ ws_gateway = WsGateway()
 image_stream_worker = ImageStreamWorker()
 task_queue = TaskQueue()
 log_db = LogDB()
+_mcp_app = create_mcp_app(settings_store.get)
 
 
 @asynccontextmanager
@@ -152,7 +154,11 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
     asyncio.create_task(_file_download_worker())
     asyncio.create_task(_file_delete_worker())
     asyncio.create_task(_files_auto_sync_loop())
-    yield
+    if settings_store.get().mcp_enabled:
+        async with mcp.session_manager.run():
+            yield
+    else:
+        yield
     ws_gateway.stop()
     task_queue.stop_worker()
     image_stream_worker.stop()
@@ -183,6 +189,33 @@ app = FastAPI(
 )
 _STATIC_DIR = Path(__file__).parent / "static"
 _STATIC_DIR.mkdir(exist_ok=True)
+
+class _MCPAwareApp:
+    """Top-level ASGI: /mcp paths → MCP handler (strips prefix, no 307 redirect).
+    All other scopes (incl. lifespan) → FastAPI app.
+    """
+
+    def __init__(self, fastapi_app: Any, mcp_app: Any) -> None:
+        self._fastapi = fastapi_app
+        self._mcp = mcp_app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") in ("http", "websocket"):
+            path = scope.get("path", "")
+            if path == "/mcp" or path.startswith("/mcp/"):
+                new_scope = dict(scope)
+                new_scope["path"] = path[4:] or "/"
+                new_scope["root_path"] = scope.get("root_path", "") + "/mcp"
+                await self._mcp(new_scope, receive, send)
+                return
+        await self._fastapi(scope, receive, send)
+
+
+if settings_store.get().mcp_enabled:
+    _top_app: Any = _MCPAwareApp(app, _mcp_app)
+    logger.info("MCP server mounted at /mcp (Streamable HTTP, 9 tools)")
+else:
+    _top_app = app
 
 
 _FILE_DL_CONCURRENCY = 3
@@ -832,6 +865,43 @@ async def serve_video(session_id: str, filename: str) -> FileResponse:
         raise HTTPException(status_code=404, detail="Video not found")
     media_type = _VIDEO_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
     return FileResponse(str(path), media_type=media_type)
+
+
+@app.get(
+    "/v1/files/proxy",
+    tags=[_TAG_FILES],
+    summary="代理拉取 assets.grok.com 资源（MCP 图片 URL 用）",
+    description=(
+        "MCP `grok_imagine` 工具生成图片后返回此 URL，由 xGate 携带 Cookie 转发拉取，"
+        "MCP 客户端无需持有 Cookie。仅允许代理 `assets.grok.com` 域名。"
+    ),
+    dependencies=[Depends(_require_api_key)],
+)
+async def proxy_grok_asset(
+    settings: Annotated[Settings, Depends(_settings)],
+    url: str = "",
+) -> StreamingResponse:
+    from urllib.parse import urlparse, unquote
+    if not url:
+        return JSONResponse({"error": "url is required"}, status_code=400)
+    try:
+        parsed = urlparse(unquote(url))
+    except Exception:
+        return JSONResponse({"error": "invalid url"}, status_code=400)
+    if parsed.netloc != "assets.grok.com":
+        return JSONResponse({"error": "only assets.grok.com is allowed"}, status_code=403)
+    key = parsed.path.lstrip("/")
+    if not key:
+        return JSONResponse({"error": "empty asset path"}, status_code=400)
+    try:
+        content_type, gen = await stream_grok_asset(settings, key)
+        return StreamingResponse(gen, media_type=content_type,
+                                 headers={"Cache-Control": "private, max-age=43200"})
+    except GrokClientError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
+    except Exception:
+        logger.exception("proxy_grok_asset failed")
+        return JSONResponse({"error": "Internal server error"}, status_code=500)
 
 
 @app.get("/v1/grok-files/", tags=[_TAG_FILES], summary="列出本地已下载 Grok 文件（DB 优先，filesystem 兜底）",
@@ -2460,7 +2530,7 @@ def run() -> None:
 
     settings = settings_store.get()
     uvicorn.run(
-        "mini_grok_api.main:app",
+        "mini_grok_api.main:_top_app",
         host=settings.server_host,
         port=settings.server_port,
         reload=False,

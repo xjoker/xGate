@@ -35,6 +35,8 @@ class Settings:
     flaresolverr_proxy_url: str
     files_auto_sync: bool
     files_auto_sync_interval_seconds: int
+    mcp_enabled: bool
+    mcp_default_model: str
 
 
 def _read_toml(path: Path) -> dict:
@@ -88,6 +90,8 @@ def load_settings() -> Settings:
         flaresolverr_proxy_url=_str(data, "grok.flaresolverr_proxy_url", ""),
         files_auto_sync=bool(_get_nested(data, "files.auto_sync", False)),
         files_auto_sync_interval_seconds=_int(data, "files.auto_sync_interval_seconds", 300),
+        mcp_enabled=bool(_get_nested(data, "mcp.enabled", True)),
+        mcp_default_model=_str(data, "mcp.default_model", "grok-4.20-auto"),
     )
 
 
@@ -117,6 +121,10 @@ def save_settings(settings: Settings, path: Path = CONFIG_PATH) -> None:
             "[files]",
             f"auto_sync = {str(settings.files_auto_sync).lower()}",
             f"auto_sync_interval_seconds = {settings.files_auto_sync_interval_seconds}",
+            "",
+            "[mcp]",
+            f"enabled = {str(settings.mcp_enabled).lower()}",
+            f"default_model = {json.dumps(settings.mcp_default_model, ensure_ascii=False)}",
             "",
         ]
     )
