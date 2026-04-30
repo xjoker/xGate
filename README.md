@@ -315,7 +315,7 @@ export XGATE_API_KEY=你的-api-key
 codex mcp add xgate \
   --env XGATE_API_KEY="$XGATE_API_KEY" \
   -- npx -y mcp-remote http://127.0.0.1:8024/mcp/sse \
-     --header "Authorization:${XGATE_API_KEY}" \
+     --header "Authorization: Bearer ${XGATE_API_KEY}" \
      --allow-http
 ```
 
@@ -336,6 +336,7 @@ curl -s -X POST http://127.0.0.1:8024/mcp \
 - MCP 可通过 `mini.toml` 的 `[mcp].enabled = false` 禁用；禁用后 `/mcp` 路径返回 404，其余路由不受影响
 - 所有 tool 返回 buffer 模式（完整结果一次性返回）；流式需求请走 `/v1/chat/completions?stream=true`
 - `grok_imagine` `return_mode=url` 返回的代理 URL（`/v1/files/proxy`）无需 cookie，MCP 客户端可直接访问生成图片
+- 代理 URL 的主机部分默认从请求 `Host` 头自动推导，无需配置；反向代理改写了 `Host` 头时，可在 `mini.toml` 中手动设置 `[server] public_base_url = "https://your.domain.com"` 覆盖
 - 单 cookie 单账号，多客户端并发会快速耗尽配额；建议调用前先用 `grok_quota` 确认剩余额度
 
 ## 数据目录

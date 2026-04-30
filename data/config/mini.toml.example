@@ -1,6 +1,9 @@
 [server]
 host = "0.0.0.0"
 port = 8024
+# 可选：MCP tool 返回的代理 URL 基址（局域网 / 反向代理部署时设为外网可访问地址）
+# 不填时自动从请求 Host 头推导；仅在反向代理改写了 Host 头时才需要手动设置
+# public_base_url = "http://10.0.0.1:8024"
 
 [auth]
 # xGate 自身的访问密钥，前端登录 / Bearer token 都使用此值
