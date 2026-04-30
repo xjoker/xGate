@@ -27,6 +27,7 @@ from typing import Any, Literal
 from urllib.parse import quote as _url_quote
 
 from mcp.server.fastmcp import FastMCP, Context
+from mcp.server.transport_security import TransportSecuritySettings
 
 from .config import Settings
 from .grok_client import (
@@ -68,6 +69,9 @@ mcp = FastMCP(
     ),
     # FastAPI mounts at /mcp and strips the prefix, so inner route must be /
     streamable_http_path="/",
+    # Disable DNS rebinding protection — xGate's _BearerAuthMiddleware handles auth.
+    # Without this, FastMCP default host="127.0.0.1" blocks any non-localhost client (421).
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
 
