@@ -299,12 +299,11 @@ claude mcp add --transport http xgate http://127.0.0.1:8024/mcp \
 
 ```toml
 [mcp_servers.xgate]
-enabled = true
-transport = { type = "streamable_http", url = "http://127.0.0.1:8024/mcp" }
-bearer_token_env_var = "XGATE_API_KEY"
-```
+url = "http://127.0.0.1:8024/mcp"
 
-然后导出 key：`export XGATE_API_KEY=你的-api-key`
+[mcp_servers.xgate.http_headers]
+Authorization = "Bearer 你的-api-key"
+```
 
 **方式二：CLI 命令（通过 mcp-remote 桥接）**
 
