@@ -293,6 +293,8 @@ claude mcp add --transport http xgate http://127.0.0.1:8024/mcp \
 
 ### Codex
 
+Codex CLI 的 `codex mcp add` 命令仅支持 stdio transport，xGate 使用 Streamable HTTP，因此需手动编辑配置文件。
+
 编辑 `~/.codex/config.toml`，在 `[mcp_servers]` 下追加：
 
 ```toml
