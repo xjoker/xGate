@@ -17,4 +17,3 @@
 - 引入 `tiktoken` 做更精确的 token 估算（当前 `len(text)//4` 仅做兜底）
 - `service_tier` / `metadata` / `store` 等 OpenAI 字段做实际持久化（目前仅校验吞掉）
 - 真实支持 `tools` / `tool_choice`（function calling），需要在 chat 模板里注入
-- session token 持久化到 SQLite（当前内存 dict，进程重启即失效）

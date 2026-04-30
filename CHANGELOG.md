@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **MCP Streamable HTTP 接入**（`/mcp`）：将 Grok 网页能力暴露为 9 个 MCP tool，
+  兼容 Claude Desktop / Cursor / Cline 等所有支持 MCP 2025-06-18 spec 的客户端
+  - `grok_chat`：多轮对话，支持自动续轮、富格式 / OpenAI 兼容双输出、X/web 搜索结果内嵌
+  - `grok_x_search`：X 高级搜索（含时间范围、最小互动数、媒体类型等 15+ 过滤参数），返回原始推文结构
+  - `grok_web_search`：Web 搜索，返回 url / title / preview 结构化结果
+  - `grok_quota`：查询当前账号在指定模型的剩余配额
+  - `grok_imagine`：图片生成（chat 通道），支持 url / local_path / base64 三种返回模式
+  - `grok_imagine_video`：视频生成，下载后本地缓存，返回代理 URL 或本地路径
+  - `grok_files_list` / `grok_files_save_local` / `grok_files_delete`：云端 Grok Files 管理
+- `/v1/files/proxy`：带鉴权的 `assets.grok.com` 代理端点，供 MCP 客户端无 Cookie 访问生成图片
+- `mcp_session`：内存 session store，同一 MCP session 内 `grok_chat` 自动续轮
+- `[mcp]` TOML 配置段：`enabled`（默认 true）/ `default_model`（默认 grok-4.20-auto）
+
+### Changed
 - OpenAI 兼容性增强：`ChatCompletionRequest` 默认 `extra="ignore"`，未知字段不再 422；
   显式接受 `n` / `stop` / `seed` / `frequency_penalty` / `presence_penalty` / `user` /
   `tools` / `tool_choice` / `response_format` / `stream_options` / `logprobs` / `metadata`

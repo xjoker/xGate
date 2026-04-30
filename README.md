@@ -231,6 +231,106 @@ curl http://127.0.0.1:8024/v1/models \
 
 完整接口文档见 `http://127.0.0.1:8024/docs`。
 
+## MCP 接入
+
+xGate 实现 [MCP 2025-06-18 Streamable HTTP](https://spec.modelcontextprotocol.io/) 协议，将 Grok 能力暴露为 9 个 MCP tool，兼容 Claude Desktop、Cursor、Cline 等支持该规范的客户端。
+
+**端点**
+
+```text
+http://127.0.0.1:8024/mcp
+```
+
+**鉴权**
+
+所有请求须带 `Authorization: Bearer <api_key>`，其中 `api_key` 与 OpenAI 接口共用同一个 `auth.api_key`。
+
+**工具列表**
+
+| 工具 | 功能 |
+|------|------|
+| `grok_chat` | 多轮对话，返回完整答复 + 搜索结果 / 引用 / 推理步骤；同 MCP session 内自动续轮 |
+| `grok_x_search` | X 高级搜索，15+ 过滤参数，返回结构化推文列表（不含 LLM 总结） |
+| `grok_web_search` | Web 搜索，返回 url / title / preview 结构化结果 |
+| `grok_quota` | 查询指定模型剩余配额 |
+| `grok_imagine` | 图片生成（chat 通道），支持 url / local_path / base64 三种返回模式 |
+| `grok_imagine_video` | 视频生成（1-5 分钟），本地缓存后返回代理 URL 或本地路径 |
+| `grok_files_list` | 列出 Grok 云端文件（实时查询） |
+| `grok_files_save_local` | 将指定云端文件下载到本地 `data/grok-files/` |
+| `grok_files_delete` | 从 Grok 云端删除文件 |
+
+详细参数 schema、返回示例与 prompt 模板见 [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md)。
+
+### Claude Desktop
+
+编辑 `~/Library/Application Support/Claude/claude_desktop_config.json`（macOS）或
+`%APPDATA%\Claude\claude_desktop_config.json`（Windows）：
+
+```json
+{
+  "mcpServers": {
+    "xgate": {
+      "type": "http",
+      "url": "http://127.0.0.1:8024/mcp",
+      "headers": {
+        "Authorization": "Bearer 你的-api-key"
+      }
+    }
+  }
+}
+```
+
+### Cursor
+
+编辑项目根目录 `.cursor/mcp.json` 或全局 `~/.cursor/mcp.json`：
+
+```json
+{
+  "mcpServers": {
+    "xgate": {
+      "type": "http",
+      "url": "http://127.0.0.1:8024/mcp",
+      "headers": {
+        "Authorization": "Bearer 你的-api-key"
+      }
+    }
+  }
+}
+```
+
+### Cline (VS Code)
+
+在 Cline 侧边栏 → MCP Servers → Configure MCP Servers，追加：
+
+```json
+{
+  "xgate": {
+    "type": "streamable-http",
+    "url": "http://127.0.0.1:8024/mcp",
+    "headers": {
+      "Authorization": "Bearer 你的-api-key"
+    }
+  }
+}
+```
+
+### 连通性验证
+
+```bash
+curl -s -X POST http://127.0.0.1:8024/mcp \
+  -H "Authorization: Bearer 你的-api-key" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}' \
+  | python3 -m json.tool
+```
+
+### 注意事项
+
+- MCP 可通过 `mini.toml` 的 `[mcp].enabled = false` 禁用；禁用后 `/mcp` 路径返回 404，其余路由不受影响
+- 所有 tool 返回 buffer 模式（完整结果一次性返回）；流式需求请走 `/v1/chat/completions?stream=true`
+- `grok_imagine` `return_mode=url` 返回的代理 URL（`/v1/files/proxy`）无需 cookie，MCP 客户端可直接访问生成图片
+- 单 cookie 单账号，多客户端并发会快速耗尽配额；建议调用前先用 `grok_quota` 确认剩余额度
+
 ## 数据目录
 
 只要持久化 `/app/data`，镜像升级后配置与生成结果都不会丢失。

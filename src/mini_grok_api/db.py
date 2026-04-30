@@ -108,6 +108,12 @@ class LogDB:
                     finished_at REAL
                 );
                 CREATE INDEX IF NOT EXISTS idx_file_del_st ON file_deletes(status);
+                CREATE TABLE IF NOT EXISTS sessions (
+                    token      TEXT PRIMARY KEY,
+                    csrf       TEXT NOT NULL,
+                    expires_at REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_sessions_exp ON sessions(expires_at);
                 CREATE TABLE IF NOT EXISTS grok_assets (
                     asset_id          TEXT    PRIMARY KEY,
                     asset_key         TEXT    NOT NULL DEFAULT '',

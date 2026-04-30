@@ -12,7 +12,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Union
 from urllib.parse import urlparse
 
 import aiohttp
@@ -65,6 +65,298 @@ class GrokTextDelta:
     done: bool = False
     image_urls: tuple[str, ...] = ()  # LLM 自主生成的图片 URL（assets.grok.com/...）
     placeholder_card: bool = False     # cardAttachment 占位（image_chunk=null），LLM 已下发生图意图
+
+
+# ---------------------------------------------------------------------------
+# MCP 路径：结构化事件类型（parse_event / stream_chat_events 使用）
+# 现有 GrokTextDelta / parse_text_delta / stream_chat 完全不变，OpenAI 路径继续使用。
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class GrokConversationStarted:
+    conversation_id: str
+    title: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GrokReasoningHeader:
+    step_id: int
+    rollout: str    # "Grok" | "Agent 1" | "Agent 2" | "Agent 3"
+    label: str      # e.g. "Searching recent posts"
+
+
+@dataclass(frozen=True, slots=True)
+class GrokReasoningToken:
+    rollout: str
+    token: str
+
+
+@dataclass(frozen=True, slots=True)
+class GrokToolCall:
+    card_id: str
+    tool: str       # "xSearch" | "webSearch" | "chatroomSend"
+    args: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class GrokXSearchResults:
+    results: list[dict[str, Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class GrokWebSearchResults:
+    results: list[dict[str, Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class GrokCitation:
+    card_id: str
+    url: str
+
+
+@dataclass(frozen=True, slots=True)
+class GrokFinalToken:
+    token: str
+
+
+@dataclass(frozen=True, slots=True)
+class GrokImageEvent:
+    image_urls: tuple[str, ...] = ()
+    placeholder_card: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class GrokDone:
+    response_id: str
+    title: str | None = None
+    follow_up_suggestions: tuple[str, ...] = ()
+
+
+GrokEvent = Union[
+    GrokConversationStarted, GrokReasoningHeader, GrokReasoningToken,
+    GrokToolCall, GrokXSearchResults, GrokWebSearchResults, GrokCitation,
+    GrokFinalToken, GrokImageEvent, GrokDone,
+]
+
+_KNOWN_TOOLS = ("xSearch", "webSearch", "chatroomSend")
+
+
+def parse_event(data: str) -> list[GrokEvent]:
+    """将单条 SSE data 字符串解析为 GrokEvent 列表。无网络调用，纯本地解析。"""
+    try:
+        obj = json.loads(data)
+    except json.JSONDecodeError:
+        return []
+
+    result = obj.get("result") or {}
+    events: list[GrokEvent] = []
+
+    # 会话创建（首条 SSE）
+    conv = result.get("conversation")
+    if isinstance(conv, dict):
+        conv_id = conv.get("conversationId", "")
+        if conv_id:
+            events.append(GrokConversationStarted(
+                conversation_id=conv_id,
+                title=conv.get("title") or None,
+            ))
+        return events
+
+    response = result.get("response") if isinstance(result.get("response"), dict) else result
+    if not isinstance(response, dict):
+        return events
+
+    # 工具调用卡片（toolUsageCard）
+    tuc = response.get("toolUsageCard")
+    if isinstance(tuc, dict):
+        card_id = tuc.get("toolUsageCardId", "")
+        for tool_name in _KNOWN_TOOLS:
+            tool_data = tuc.get(tool_name)
+            if isinstance(tool_data, dict):
+                events.append(GrokToolCall(
+                    card_id=card_id,
+                    tool=tool_name,
+                    args=tool_data.get("args") or {},
+                ))
+                break
+
+    # X 搜索结果
+    xsr = response.get("xSearchResults")
+    if isinstance(xsr, dict):
+        results = xsr.get("results")
+        if isinstance(results, list):
+            events.append(GrokXSearchResults(results=results))
+
+    # Web 搜索结果（仅非空时才发）
+    wsr = response.get("webSearchResults")
+    if isinstance(wsr, dict):
+        results = wsr.get("results")
+        if isinstance(results, list) and results:
+            events.append(GrokWebSearchResults(results=results))
+
+    # cardAttachment：citation_card 或 generated_image_card
+    card = response.get("cardAttachment")
+    if isinstance(card, dict):
+        raw = card.get("jsonData")
+        if isinstance(raw, str) and raw:
+            try:
+                inner = json.loads(raw)
+                card_type = inner.get("cardType", "")
+                if card_type == "citation_card":
+                    url = inner.get("url", "")
+                    if url:
+                        events.append(GrokCitation(card_id=inner.get("id", ""), url=url))
+                elif card_type == "generated_image_card":
+                    ic = inner.get("image_chunk")
+                    if isinstance(ic, dict):
+                        img_url = ic.get("imageUrl", "")
+                        if img_url and ic.get("progress") == 100 and not ic.get("moderated"):
+                            full = img_url if img_url.startswith("http") else f"https://assets.grok.com/{img_url.lstrip('/')}"
+                            events.append(GrokImageEvent(image_urls=(full,)))
+                    else:
+                        events.append(GrokImageEvent(placeholder_card=True))
+            except Exception:
+                pass
+
+    # Reasoning token（isThinking=True）
+    if response.get("isThinking") is True:
+        rollout = response.get("rolloutId", "")
+        token = response.get("token", "")
+        step_id = response.get("messageStepId")
+        if response.get("messageTag") == "header" and token:
+            events.append(GrokReasoningHeader(
+                step_id=int(step_id) if step_id is not None else 0,
+                rollout=rollout,
+                label=token,
+            ))
+        elif token:
+            events.append(GrokReasoningToken(rollout=rollout, token=token))
+        return events
+
+    # finalMetadata：优先级高于 isSoftStop，包含 followUpSuggestions
+    fm = response.get("finalMetadata")
+    if isinstance(fm, dict):
+        response_id = response.get("responseId", "")
+        suggestions = fm.get("followUpSuggestions") or []
+        follow_ups = tuple(
+            s["label"] for s in suggestions
+            if isinstance(s, dict) and s.get("label")
+        )
+        events.append(GrokDone(response_id=response_id, follow_up_suggestions=follow_ups))
+        return events
+
+    # isSoftStop：流结束信号，无 followUpSuggestions
+    if response.get("isSoftStop"):
+        response_id = response.get("responseId", "")
+        events.append(GrokDone(response_id=response_id))
+        return events
+
+    # Final token（正文输出）
+    if response.get("messageTag") == "final" and not response.get("isThinking"):
+        token = response.get("token")
+        if token is not None:
+            events.append(GrokFinalToken(token=str(token)))
+
+    return events
+
+
+_CHAT_CONTINUE_URL = "https://grok.com/rest/app-chat/conversations/{conversation_id}/responses"
+
+
+async def stream_chat_events(
+    settings: Settings,
+    *,
+    message: str,
+    mode_id: str,
+    conversation_id: str | None = None,
+    parent_response_id: str | None = None,
+    disable_search: bool = False,
+    temporary: bool = True,
+) -> AsyncGenerator[GrokEvent, None]:
+    """按 GrokEvent 联合类型流式产出结构化事件。
+
+    conversation_id 非空 → 续轮（POST /conversations/{id}/responses + parentResponseId）。
+    conversation_id 为 None → 新建会话（POST /conversations/new）。
+    与旧 stream_chat 完全独立，互不影响。
+    """
+    if not settings.grok_cookie:
+        raise GrokClientError(
+            "GROK_COOKIE is not configured",
+            status_code=400,
+            code="missing_grok_cookie",
+        )
+
+    if conversation_id:
+        url = _CHAT_CONTINUE_URL.format(conversation_id=conversation_id)
+        payload: dict[str, Any] = {
+            "message": message,
+            "fileAttachments": [],
+            "imageAttachments": [],
+            "disableSearch": disable_search,
+            "enableImageGeneration": True,
+            "returnImageBytes": False,
+            "returnRawGrokInXaiRequest": False,
+            "enableImageStreaming": True,
+            "imageGenerationCount": 2,
+            "forceConcise": False,
+            "enableSideBySide": True,
+            "sendFinalMetadata": True,
+            "disableTextFollowUps": False,
+            "isAsyncChat": False,
+            "disableSelfHarmShortCircuit": False,
+            "metadata": {},
+            "modeId": mode_id or "fast",
+        }
+        if parent_response_id:
+            payload["parentResponseId"] = parent_response_id
+    else:
+        url = CHAT_URL
+        payload = build_chat_payload(message, mode_id, temporary=temporary)
+        if disable_search:
+            payload["disableSearch"] = True
+
+    raw_payload = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+    async with AsyncSession(**_session_kwargs(settings)) as session:
+        try:
+            response = await session.post(
+                url,
+                headers=_headers(settings),
+                data=raw_payload,
+                timeout=settings.grok_timeout_seconds,
+                stream=True,
+            )
+        except Exception as exc:
+            raise GrokClientError(f"Grok transport failed: {exc}", status_code=502) from exc
+
+        if response.status_code != 200:
+            body = response.content.decode("utf-8", "replace")[:400]
+            logger.error("Grok upstream %s: %s", response.status_code, body)
+            if _contains_cloudflare_challenge(response.status_code, body):
+                raise GrokClientError(
+                    "Grok Cloudflare challenge detected",
+                    status_code=403,
+                    body=body,
+                    code="cloudflare_challenge",
+                )
+            raise GrokClientError(
+                f"Grok upstream returned {response.status_code}",
+                status_code=response.status_code,
+                body=body,
+                code="upstream_error",
+            )
+
+        try:
+            async for raw_line in response.aiter_lines():
+                event_type, data = classify_line(raw_line)
+                if event_type == "done":
+                    break
+                if event_type != "data":
+                    continue
+                for event in parse_event(data):
+                    yield event
+        except Exception as exc:
+            raise GrokClientError(f"Grok stream read failed: {exc}", status_code=502) from exc
 
 
 def build_chat_payload(
