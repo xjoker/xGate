@@ -380,6 +380,12 @@ class LogDB:
                 " FROM video_logs WHERE created_at>? GROUP BY d ORDER BY d",
                 (day14_ago,),
             ).fetchall()
+            mcp = dict(conn.execute(
+                "SELECT COUNT(*) total,"
+                " COALESCE(SUM(CASE WHEN status='success' THEN 1 ELSE 0 END),0) ok,"
+                " COALESCE(SUM(CASE WHEN status='error'   THEN 1 ELSE 0 END),0) err"
+                " FROM mcp_logs"
+            ).fetchone())
         return {
             "chat": {"total": chat["total"], "success": chat["ok"], "error": chat["err"]},
             "images": {
@@ -389,6 +395,7 @@ class LogDB:
                 "error": img["err"],
             },
             "videos": {"total": vid["total"], "success": vid["ok"], "error": vid["err"]},
+            "mcp": {"total": mcp["total"], "success": mcp["ok"], "error": mcp["err"]},
             "last_7d": {"chat": c7["chat"], "images": c7["imgs"], "videos": c7["videos"]},
             "daily_chat":   [{"date": r["d"], "count": r["c"]} for r in raw_chat],
             "daily_images": [{"date": r["d"], "count": r["c"]} for r in raw_img],

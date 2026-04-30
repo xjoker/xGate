@@ -1,6 +1,6 @@
 # xGate
 
-> 面向 Grok Imagine 的图片 / 视频生成与文件管理工具，同时提供 OpenAI 兼容 API。
+> Grok Web 图片 / 视频生成与文件管理工具；提供 OpenAI 兼容 API 与 MCP 服务，可直接接入 Claude Code、Codex 等 AI 编程助手。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.13+](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/)
@@ -31,6 +31,7 @@ xGate 把这些操作收敛到一个 Web UI 里：
 - **Grok Files 管理**：同步云端列表、批量下载到本地、清理云端文件
 - **反 Cloudflare**：基于 `curl_cffi` 模拟 Chrome TLS 指纹；登录态通过 Chrome cURL 一键导入；可选接入 FlareSolverr 定时刷新 `cf_clearance`
 - **OpenAI 兼容接口**：`/v1` 路径下提供标准 endpoint，外部客户端可直接接入
+- **MCP 工具服务**：实现 MCP 2025-06-18 Streamable HTTP 协议，暴露 9 个工具（对话、搜索、生图、配额查询等），可在 Claude Code / Codex 中直接调用 Grok 能力
 - **极简部署**：单文件配置 `data/config/mini.toml`，单目录持久化 `/app/data`
 
 ## 界面预览
@@ -233,7 +234,7 @@ curl http://127.0.0.1:8024/v1/models \
 
 ## MCP 接入
 
-xGate 实现 [MCP 2025-06-18 Streamable HTTP](https://spec.modelcontextprotocol.io/) 协议，将 Grok 能力暴露为 9 个 MCP tool，兼容 Claude Desktop、Cursor、Cline 等支持该规范的客户端。
+xGate 实现 [MCP 2025-06-18 Streamable HTTP](https://spec.modelcontextprotocol.io/) 协议，将 Grok 能力暴露为 9 个 MCP tool，可直接在 Claude Code、Codex 等支持该规范的 AI 助手中使用。
 
 **端点**
 
@@ -261,10 +262,18 @@ http://127.0.0.1:8024/mcp
 
 详细参数 schema、返回示例与 prompt 模板见 [docs/MCP_TOOLS.md](docs/MCP_TOOLS.md)。
 
-### Claude Desktop
+### Claude Code
 
-编辑 `~/Library/Application Support/Claude/claude_desktop_config.json`（macOS）或
-`%APPDATA%\Claude\claude_desktop_config.json`（Windows）：
+**方式一：CLI 一键添加（推荐）**
+
+```bash
+claude mcp add --transport http xgate http://127.0.0.1:8024/mcp \
+  --header "Authorization: Bearer 你的-api-key"
+```
+
+**方式二：编辑配置文件**
+
+编辑 `~/.claude/mcp.json`：
 
 ```json
 {
@@ -280,39 +289,20 @@ http://127.0.0.1:8024/mcp
 }
 ```
 
-### Cursor
+验证：`claude mcp list`
 
-编辑项目根目录 `.cursor/mcp.json` 或全局 `~/.cursor/mcp.json`：
+### Codex
 
-```json
-{
-  "mcpServers": {
-    "xgate": {
-      "type": "http",
-      "url": "http://127.0.0.1:8024/mcp",
-      "headers": {
-        "Authorization": "Bearer 你的-api-key"
-      }
-    }
-  }
-}
+编辑 `~/.codex/config.toml`，在 `[mcp_servers]` 下追加：
+
+```toml
+[mcp_servers.xgate]
+enabled = true
+transport = { type = "streamable_http", url = "http://127.0.0.1:8024/mcp" }
+bearer_token_env_var = "XGATE_API_KEY"
 ```
 
-### Cline (VS Code)
-
-在 Cline 侧边栏 → MCP Servers → Configure MCP Servers，追加：
-
-```json
-{
-  "xgate": {
-    "type": "streamable-http",
-    "url": "http://127.0.0.1:8024/mcp",
-    "headers": {
-      "Authorization": "Bearer 你的-api-key"
-    }
-  }
-}
-```
+然后在终端导出 key：`export XGATE_API_KEY=你的-api-key`
 
 ### 连通性验证
 

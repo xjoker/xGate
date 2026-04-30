@@ -168,7 +168,7 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
 
 app = FastAPI(
     title="xGate API",
-    version="0.1.0",
+    version="0.1.1",
     lifespan=_lifespan,
     description=(
         "**xAI Grok → OpenAI-compatible API 网关**\n\n"
@@ -1593,42 +1593,8 @@ def _not_implemented(endpoint: str) -> JSONResponse:
     )
 
 
-@app.post("/v1/embeddings", tags=[_TAG_OPENAI], summary="（未实现）Embeddings",
-          description="xGate 不提供 embedding 模型；调用返回 501 / not_implemented，方便客户端明确区分。",
-          dependencies=[Depends(_require_api_key)])
-async def embeddings_stub() -> JSONResponse:
-    return _not_implemented("/v1/embeddings")
-
-
-@app.post("/v1/completions", tags=[_TAG_OPENAI], summary="（未实现）Legacy Completions",
-          description="legacy 文本补全接口未实现，请改用 /v1/chat/completions。",
-          dependencies=[Depends(_require_api_key)])
-async def completions_stub() -> JSONResponse:
-    return _not_implemented("/v1/completions")
-
-
-@app.post("/v1/moderations", tags=[_TAG_OPENAI], summary="（未实现）Moderations",
-          dependencies=[Depends(_require_api_key)])
-async def moderations_stub() -> JSONResponse:
-    return _not_implemented("/v1/moderations")
-
-
-@app.post("/v1/audio/speech", tags=[_TAG_OPENAI], summary="（未实现）TTS",
-          dependencies=[Depends(_require_api_key)])
-async def audio_speech_stub() -> JSONResponse:
-    return _not_implemented("/v1/audio/speech")
-
-
-@app.post("/v1/audio/transcriptions", tags=[_TAG_OPENAI], summary="（未实现）STT",
-          dependencies=[Depends(_require_api_key)])
-async def audio_transcriptions_stub() -> JSONResponse:
-    return _not_implemented("/v1/audio/transcriptions")
-
-
-@app.post("/v1/audio/translations", tags=[_TAG_OPENAI], summary="（未实现）Audio translations",
-          dependencies=[Depends(_require_api_key)])
-async def audio_translations_stub() -> JSONResponse:
-    return _not_implemented("/v1/audio/translations")
+# Unimplemented OpenAI stubs intentionally omitted — clients that depend on
+# /v1/embeddings, /v1/completions, /v1/moderations, /v1/audio/* will get 404.
 
 
 # ---------------------------------------------------------------------------
@@ -2070,19 +2036,8 @@ _IMAGE_QUOTA_MODE = "auto"
 
 async def _fetch_quota(settings: Settings, mode_name: str = "auto") -> dict | None:
     """POST /rest/rate-limits for a mode, return parsed quota or None."""
-    import aiohttp
     try:
-        async with aiohttp.ClientSession() as sess:
-            async with sess.post(
-                _RATE_LIMITS_URL,
-                headers={**_headers(settings), "Content-Type": "application/json"},
-                json={"modelName": mode_name},
-                timeout=aiohttp.ClientTimeout(total=20),
-                ssl=False,
-            ) as resp:
-                if resp.status != 200:
-                    return None
-                body = await resp.json(content_type=None)
+        body = await query_rate_limits(settings, model_name=mode_name)
         remaining = body.get("remainingQueries")
         if remaining is None:
             return None
@@ -2408,6 +2363,37 @@ async def admin_status(settings: Annotated[Settings, Depends(_settings)]) -> dic
     }
 
 
+@app.get("/admin/dashboard", tags=[_TAG_ADMIN], summary="Dashboard 汇总",
+         description="一次性返回 Dashboard 所需全部数据：配额、任务统计、日志统计、运行状态。",
+         dependencies=[Depends(_require_api_key)])
+async def admin_dashboard(settings: Annotated[Settings, Depends(_settings)]) -> JSONResponse:
+    quota_results = await asyncio.gather(*[_fetch_quota(settings, m) for m in _QUOTA_MODES])
+    quotas = {r["mode"]: r for r in quota_results if r}
+    log_stats = log_db.stats()
+    task_stats = task_queue.stats()
+    all_tasks = task_queue.list_tasks()
+    total_moderated = sum(t.get("moderated_count", 0) for t in all_tasks)
+    recent_tasks = sorted(
+        [t for t in all_tasks if t.get("status") in ("pending", "running", "paused", "failed")],
+        key=lambda t: t.get("priority", 999),
+    )[:8]
+    snap = monitor.snapshot()
+    return JSONResponse({
+        "version": app.version,
+        "quotas": quotas,
+        "tasks": {**task_stats, "total_moderated": total_moderated},
+        "recent_tasks": recent_tasks,
+        "logs": log_stats,
+        "monitor": {
+            "total_requests": snap.total_requests,
+            "success_count": snap.success_count,
+            "failure_count": snap.failure_count,
+            "cloudflare_challenge": snap.cloudflare_challenge,
+            "recent_error": snap.recent_error_summary,
+        },
+        "cookie_configured": bool(settings.grok_cookie),
+        "proxy_configured": bool(settings.grok_proxy),
+    })
 
 
 @app.get("/v1/grok/assets", tags=[_TAG_FILES], summary="列出 Grok Files",
