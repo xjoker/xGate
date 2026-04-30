@@ -325,6 +325,7 @@ async def grok_x_search(
             "parent": r.get("parent"),
         })
     log_db.log_mcp(request_id=_rid, tool="grok_x_search", prompt=query[:500],
+                   response=f"{len(normalized)} 条结果",
                    status="success", duration_ms=int((time.time()-_t0)*1000))
     return {"query_used": query_str, "result_count": len(normalized), "results": normalized}
 
@@ -374,6 +375,7 @@ async def grok_web_search(
 
     results = all_results[:limit]
     log_db.log_mcp(request_id=_rid, tool="grok_web_search", prompt=query[:500],
+                   response=f"{len(results)} 条结果",
                    status="success", duration_ms=int((time.time()-_t0)*1000))
     return {"query_used": query_str, "result_count": len(results), "results": results}
 
@@ -388,6 +390,7 @@ async def grok_quota(model: str = "grok-4.20-auto") -> dict:
     try:
         raw = await query_rate_limits(settings, model_name=mode_id)
         log_db.log_mcp(request_id=_rid, tool="grok_quota", model=model,
+                       response=f"remaining={raw.get('remainingQueries')}/{raw.get('totalQueries')}",
                        status="success", duration_ms=int((time.time()-_t0)*1000))
         return {
             "model": model,
@@ -482,6 +485,7 @@ async def grok_imagine(
         images.append(item)
 
     log_db.log_mcp(request_id=_rid, tool="grok_imagine", prompt=prompt[:500],
+                   response=f"{len(images)} 张图片，moderation={moderation}",
                    status="success", duration_ms=int((time.time()-_t0)*1000))
     return {
         "session_id": session_id,
@@ -514,6 +518,7 @@ async def grok_imagine_video(
 
     serve_path = await get_video_link(settings, post_id)
     log_db.log_mcp(request_id=_rid, tool="grok_imagine_video", prompt=prompt[:500],
+                   response=f"post_id={post_id}, serve_path={serve_path or 'none'}",
                    status="success", duration_ms=int((time.time()-_t0)*1000))
     if return_mode == "local_path":
         local = IMAGE_DIR / session_id / f"{post_id}.mp4"
@@ -571,6 +576,7 @@ async def grok_files_list(
 
     page = items[offset:offset + limit]
     log_db.log_mcp(request_id=_rid, tool="grok_files_list",
+                   response=f"{len(page)}/{len(items)} 个文件",
                    status="success", duration_ms=int((time.time()-_t0)*1000))
     return {"items": page, "total": len(items)}
 
@@ -607,6 +613,7 @@ async def grok_files_save_local(file_ids: list[str]) -> dict:
 
     status = "success" if not failed else ("error" if not saved else "success")
     log_db.log_mcp(request_id=_rid, tool="grok_files_save_local", prompt=str(file_ids)[:200],
+                   response=f"saved={len(saved)}, failed={len(failed)}",
                    status=status, duration_ms=int((time.time()-_t0)*1000))
     return {"saved": saved, "failed": failed}
 
@@ -631,6 +638,7 @@ async def grok_files_delete(file_ids: list[str]) -> dict:
 
     status = "success" if not failed else ("error" if not deleted else "success")
     log_db.log_mcp(request_id=_rid, tool="grok_files_delete", prompt=str(file_ids)[:200],
+                   response=f"deleted={len(deleted)}, failed={len(failed)}",
                    status=status, duration_ms=int((time.time()-_t0)*1000))
     return {"deleted": deleted, "failed": failed}
 
