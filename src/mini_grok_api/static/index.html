@@ -1099,51 +1099,149 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
 
 <!-- ═══════════════════ HOME VIEW ═══════════════════ -->
 <div id="view-home" class="view" style="padding-top:var(--nav-h)">
-<div style="padding:28px 20px 40px;max-width:960px;margin:0 auto">
+<div style="padding:24px 20px 40px;max-width:1040px;margin:0 auto">
 
-  <div style="font-size:22px;font-weight:700;letter-spacing:-.04em;margin-bottom:20px">概览</div>
-
-  <!-- Quick links -->
-  <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px">
-    <a href="/docs" target="_blank" class="btn btn-outline" style="font-size:13px;gap:6px">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-      Swagger UI
-    </a>
-    <a href="/redoc" target="_blank" class="btn btn-outline" style="font-size:13px;gap:6px">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
-      ReDoc
-    </a>
-  </div>
-
-  <!-- Quota cards -->
-  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:16px">
-    <div class="status-card"><div class="status-card-label">额度剩余</div><div class="status-card-value" id="h-quota-rem" style="color:#059669">—</div></div>
-    <div class="status-card"><div class="status-card-label">额度总量</div><div class="status-card-value" id="h-quota-total">—</div></div>
-    <div class="status-card"><div class="status-card-label">已用比例</div><div class="status-card-value" id="h-quota-pct">—</div></div>
-  </div>
-
-  <!-- Stat cards -->
-  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:28px" id="home-stat-grid">
-    <div class="status-card"><div class="status-card-label">聊天请求</div><div class="status-card-value" id="h-chat-total">—</div></div>
-    <div class="status-card"><div class="status-card-label">聊天成功</div><div class="status-card-value" id="h-chat-ok" style="color:#059669">—</div></div>
-    <div class="status-card"><div class="status-card-label">聊天失败</div><div class="status-card-value" id="h-chat-err" style="color:#dc2626">—</div></div>
-    <div class="status-card"><div class="status-card-label">生图请求</div><div class="status-card-value" id="h-img-reqs">—</div></div>
-    <div class="status-card"><div class="status-card-label">生图总数</div><div class="status-card-value" id="h-img-total">—</div></div>
-    <div class="status-card"><div class="status-card-label">近 7 天聊天</div><div class="status-card-value" id="h-7d-chat">—</div></div>
-    <div class="status-card"><div class="status-card-label">近 7 天图片</div><div class="status-card-value" id="h-7d-imgs">—</div></div>
-  </div>
-
-  <!-- Sparkline charts -->
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-    <div class="settings-card">
-      <div style="font-size:13px;font-weight:600;margin-bottom:12px">近 14 天·聊天请求</div>
-      <canvas id="chart-chat" height="60"></canvas>
+  <!-- Header -->
+  <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:20px">
+    <div style="display:flex;align-items:baseline;gap:10px">
+      <span style="font-size:22px;font-weight:700;letter-spacing:-.04em">概览</span>
+      <span id="h-version" style="font-size:12px;color:#6b7280;background:#f3f4f6;padding:2px 8px;border-radius:99px">v—</span>
     </div>
-    <div class="settings-card">
-      <div style="font-size:13px;font-weight:600;margin-bottom:12px">近 14 天·生成图片数</div>
-      <canvas id="chart-imgs" height="60"></canvas>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <a href="/docs" target="_blank" class="btn btn-outline" style="font-size:12px;gap:5px;padding:5px 10px">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        Swagger
+      </a>
+      <a href="/redoc" target="_blank" class="btn btn-outline" style="font-size:12px;gap:5px;padding:5px 10px">ReDoc</a>
+      <button class="btn btn-outline" style="font-size:12px;padding:5px 10px" onclick="loadHome()">刷新</button>
     </div>
   </div>
+
+  <!-- Quota section -->
+  <div style="font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">配额监控</div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px" id="h-quota-grid">
+    <div class="settings-card" style="padding:14px 16px">
+      <div style="font-size:11px;font-weight:600;color:#6b7280;margin-bottom:8px">AUTO 模式</div>
+      <div style="display:flex;align-items:baseline;gap:4px;margin-bottom:4px">
+        <span id="h-q-auto-rem" style="font-size:24px;font-weight:700">—</span>
+        <span id="h-q-auto-total" style="font-size:12px;color:#9ca3af">/ —</span>
+      </div>
+      <div style="height:4px;border-radius:2px;background:#e5e7eb;overflow:hidden;margin-bottom:6px">
+        <div id="h-q-auto-bar" style="height:100%;width:0%;background:#059669;transition:width .3s"></div>
+      </div>
+      <div style="font-size:11px;color:#6b7280"><span id="h-q-auto-pct">—</span> 已用</div>
+    </div>
+    <div class="settings-card" style="padding:14px 16px">
+      <div style="font-size:11px;font-weight:600;color:#6b7280;margin-bottom:8px">FAST 模式</div>
+      <div style="display:flex;align-items:baseline;gap:4px;margin-bottom:4px">
+        <span id="h-q-fast-rem" style="font-size:24px;font-weight:700">—</span>
+        <span id="h-q-fast-total" style="font-size:12px;color:#9ca3af">/ —</span>
+      </div>
+      <div style="height:4px;border-radius:2px;background:#e5e7eb;overflow:hidden;margin-bottom:6px">
+        <div id="h-q-fast-bar" style="height:100%;width:0%;background:#3b82f6;transition:width .3s"></div>
+      </div>
+      <div style="font-size:11px;color:#6b7280"><span id="h-q-fast-pct">—</span> 已用</div>
+    </div>
+    <div class="settings-card" style="padding:14px 16px">
+      <div style="font-size:11px;font-weight:600;color:#6b7280;margin-bottom:8px">THINK 模式</div>
+      <div style="display:flex;align-items:baseline;gap:4px;margin-bottom:4px">
+        <span id="h-q-think-rem" style="font-size:24px;font-weight:700">—</span>
+        <span id="h-q-think-total" style="font-size:12px;color:#9ca3af">/ —</span>
+      </div>
+      <div style="height:4px;border-radius:2px;background:#e5e7eb;overflow:hidden;margin-bottom:6px">
+        <div id="h-q-think-bar" style="height:100%;width:0%;background:#8b5cf6;transition:width .3s"></div>
+      </div>
+      <div style="font-size:11px;color:#6b7280"><span id="h-q-think-pct">—</span> 已用</div>
+    </div>
+  </div>
+
+  <!-- Task queue + service status row -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">
+    <!-- Task queue -->
+    <div class="settings-card" style="padding:14px 16px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div style="font-size:12px;font-weight:600;color:#6b7280">任务队列</div>
+        <span style="font-size:11px;color:#6b7280">Worker: <span id="h-t-worker" style="font-weight:600;color:#374151">—</span></span>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;margin-bottom:10px">
+        <div style="text-align:center">
+          <div id="h-t-pending" style="font-size:18px;font-weight:700;color:#d97706">—</div>
+          <div style="font-size:10px;color:#9ca3af;margin-top:2px">等待</div>
+        </div>
+        <div style="text-align:center">
+          <div id="h-t-running" style="font-size:18px;font-weight:700;color:#3b82f6">—</div>
+          <div style="font-size:10px;color:#9ca3af;margin-top:2px">运行</div>
+        </div>
+        <div style="text-align:center">
+          <div id="h-t-done" style="font-size:18px;font-weight:700;color:#059669">—</div>
+          <div style="font-size:10px;color:#9ca3af;margin-top:2px">完成</div>
+        </div>
+        <div style="text-align:center">
+          <div id="h-t-failed" style="font-size:18px;font-weight:700;color:#dc2626">—</div>
+          <div style="font-size:10px;color:#9ca3af;margin-top:2px">失败</div>
+        </div>
+        <div style="text-align:center">
+          <div id="h-t-moderated" style="font-size:18px;font-weight:700;color:#7c3aed">—</div>
+          <div style="font-size:10px;color:#9ca3af;margin-top:2px">拦截</div>
+        </div>
+      </div>
+      <div style="font-size:11px;color:#9ca3af">共 <span id="h-t-total">—</span> 个任务</div>
+    </div>
+    <!-- Service status -->
+    <div class="settings-card" style="padding:14px 16px">
+      <div style="font-size:12px;font-weight:600;color:#6b7280;margin-bottom:12px">服务状态</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+        <div>
+          <div style="font-size:10px;color:#9ca3af;margin-bottom:2px">总请求</div>
+          <div id="h-m-total" style="font-size:18px;font-weight:700">—</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:#9ca3af;margin-bottom:2px">成功率</div>
+          <div id="h-m-rate" style="font-size:18px;font-weight:700">—</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:#9ca3af;margin-bottom:2px">CF 状态</div>
+          <div id="h-m-cf" style="font-size:13px;font-weight:600">—</div>
+        </div>
+        <div>
+          <div style="font-size:10px;color:#9ca3af;margin-bottom:2px">MCP 调用</div>
+          <div id="h-m-mcp" style="font-size:18px;font-weight:700">—</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Activity stats row -->
+  <div style="font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">使用统计</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px;margin-bottom:20px">
+    <div class="status-card"><div class="status-card-label">聊天·总计</div><div class="status-card-value" id="h-chat-total">—</div></div>
+    <div class="status-card"><div class="status-card-label">聊天·成功</div><div class="status-card-value" id="h-chat-ok" style="color:#059669">—</div></div>
+    <div class="status-card"><div class="status-card-label">聊天·失败</div><div class="status-card-value" id="h-chat-err" style="color:#dc2626">—</div></div>
+    <div class="status-card"><div class="status-card-label">生图·批次</div><div class="status-card-value" id="h-img-reqs">—</div></div>
+    <div class="status-card"><div class="status-card-label">生图·总数</div><div class="status-card-value" id="h-img-total">—</div></div>
+    <div class="status-card"><div class="status-card-label">视频·总计</div><div class="status-card-value" id="h-vid-total">—</div></div>
+  </div>
+
+  <!-- Recent tasks -->
+  <div style="font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">进行中的任务</div>
+  <div class="settings-card" style="padding:0;overflow:hidden;margin-bottom:20px">
+    <div id="h-task-list" style="min-height:48px">
+      <div style="padding:14px 16px;font-size:13px;color:#9ca3af;text-align:center">加载中…</div>
+    </div>
+  </div>
+
+  <!-- Sparklines -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+    <div class="settings-card">
+      <div style="font-size:12px;font-weight:600;margin-bottom:10px;color:#374151">近 14 天·聊天</div>
+      <canvas id="chart-chat" height="56"></canvas>
+    </div>
+    <div class="settings-card">
+      <div style="font-size:12px;font-weight:600;margin-bottom:10px;color:#374151">近 14 天·生图</div>
+      <canvas id="chart-imgs" height="56"></canvas>
+    </div>
+  </div>
+
 </div><!-- inner -->
 </div><!-- view-home -->
 
@@ -2862,31 +2960,89 @@ window.showQuotaDetails = function() {
 };
 
 // ── Dashboard (Home) ──────────────────────────────────────────
+function _setQuotaCard(prefix, color, q) {
+  const pct = q?.used_pct ?? 0;
+  const rem = q?.remaining ?? '—';
+  const tot = q?.total ?? '—';
+  const barColor = pct >= 90 ? '#dc2626' : pct >= 70 ? '#d97706' : color;
+  const el = id => document.getElementById(id);
+  if (el(`h-q-${prefix}-rem`))   el(`h-q-${prefix}-rem`).textContent = rem;
+  if (el(`h-q-${prefix}-total`)) el(`h-q-${prefix}-total`).textContent = '/ ' + tot;
+  if (el(`h-q-${prefix}-pct`))   el(`h-q-${prefix}-pct`).textContent = pct + '%';
+  const bar = el(`h-q-${prefix}-bar`);
+  if (bar) { bar.style.width = Math.min(pct, 100) + '%'; bar.style.background = barColor; }
+  const remEl = el(`h-q-${prefix}-rem`);
+  if (remEl) remEl.style.color = barColor;
+}
+
 window.loadHome = async function() {
-  api('GET', '/v1/quota').then(q => {
-    const auto = q.quotas?.auto;
-    if (auto) {
-      document.getElementById('h-quota-rem').textContent = auto.remaining ?? '—';
-      document.getElementById('h-quota-total').textContent = auto.total ?? '—';
-      const pEl = document.getElementById('h-quota-pct');
-      if (pEl) {
-        pEl.textContent = (auto.used_pct ?? 0) + '%';
-        pEl.style.color = auto.used_pct >= 90 ? '#dc2626' : auto.used_pct >= 70 ? '#d97706' : '#059669';
+  try {
+    const d = await api('GET', '/admin/dashboard');
+    // version
+    const vEl = document.getElementById('h-version');
+    if (vEl && d.version) vEl.textContent = 'v' + d.version;
+    // quotas
+    _setQuotaCard('auto',  '#059669', d.quotas?.auto);
+    _setQuotaCard('fast',  '#3b82f6', d.quotas?.fast);
+    _setQuotaCard('think', '#8b5cf6', d.quotas?.think);
+    // tasks
+    const by = d.tasks?.by_status || {};
+    const $ = id => { const e = document.getElementById(id); return e ? (v => { e.textContent = v; }) : () => {}; };
+    $('h-t-pending')(by.pending ?? 0);
+    $('h-t-running')(by.running ?? 0);
+    $('h-t-done')((by.done ?? 0) + (by.completed ?? 0));
+    $('h-t-failed')((by.failed ?? 0) + (by.cancelled ?? 0));
+    $('h-t-moderated')(d.tasks?.total_moderated ?? 0);
+    $('h-t-total')(d.tasks?.total ?? 0);
+    const wEl = document.getElementById('h-t-worker');
+    if (wEl) { wEl.textContent = d.tasks?.worker_running ? '运行中' : '空闲'; wEl.style.color = d.tasks?.worker_running ? '#059669' : '#6b7280'; }
+    // recent tasks table
+    const taskEl = document.getElementById('h-task-list');
+    if (taskEl) {
+      const tasks = d.recent_tasks || [];
+      if (!tasks.length) {
+        taskEl.innerHTML = '<div style="padding:14px 16px;font-size:13px;color:#9ca3af;text-align:center">暂无进行中的任务</div>';
+      } else {
+        const STATUS_COLOR = {pending:'#d97706',running:'#3b82f6',paused:'#6b7280',failed:'#dc2626',done:'#059669',cancelled:'#9ca3af'};
+        const STATUS_LABEL = {pending:'等待',running:'运行',paused:'暂停',failed:'失败',done:'完成',cancelled:'取消'};
+        const rows = tasks.map(t => {
+          const pct = t.target_count > 0 ? Math.round(t.generated_count / t.target_count * 100) : 0;
+          const mod = t.moderated_count > 0 ? `<span style="color:#7c3aed;font-size:10px;margin-left:6px">拦截 ${t.moderated_count}</span>` : '';
+          return `<div style="display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid #f3f4f6">
+            <span style="flex-shrink:0;font-size:10px;font-weight:600;color:${STATUS_COLOR[t.status]||'#6b7280'};background:${STATUS_COLOR[t.status]||'#6b7280'}18;padding:2px 6px;border-radius:4px">${STATUS_LABEL[t.status]||t.status}</span>
+            <div style="flex:1;min-width:0;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#374151">${t.prompt||''}</div>
+            <div style="flex-shrink:0;font-size:11px;color:#6b7280">${t.generated_count}/${t.target_count}${mod}</div>
+            <div style="flex-shrink:0;width:60px;height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden"><div style="height:100%;width:${pct}%;background:#3b82f6"></div></div>
+          </div>`;
+        }).join('');
+        taskEl.innerHTML = rows;
       }
     }
-  }).catch(() => {});
-  try {
-    const d = await api('GET', '/v1/logs/stats');
-    document.getElementById('h-chat-total').textContent = d.chat?.total ?? '—';
-    document.getElementById('h-chat-ok').textContent    = d.chat?.success ?? '—';
-    document.getElementById('h-chat-err').textContent   = d.chat?.error ?? '—';
-    document.getElementById('h-img-reqs').textContent   = d.images?.total_requests ?? '—';
-    document.getElementById('h-img-total').textContent  = d.images?.total_images ?? '—';
-    document.getElementById('h-7d-chat').textContent    = d.last_7d?.chat ?? '—';
-    document.getElementById('h-7d-imgs').textContent    = d.last_7d?.images ?? '—';
-    drawSparkline('chart-chat', d.daily_chat  || [], '#111827');
-    drawSparkline('chart-imgs', d.daily_images || [], '#059669');
-  } catch(e) { /* silently ignore */ }
+    // monitor
+    const m = d.monitor || {};
+    const total = m.total_requests || 0;
+    const rate = total > 0 ? Math.round(m.success_count / total * 100) + '%' : '—';
+    $('h-m-total')(total);
+    $('h-m-rate')(rate);
+    const cfEl = document.getElementById('h-m-cf');
+    if (cfEl) {
+      cfEl.textContent = m.cloudflare_challenge ? 'CF 拦截' : '正常';
+      cfEl.style.color = m.cloudflare_challenge ? '#dc2626' : '#059669';
+    }
+    // mcp stat from logs
+    const mcp_total = (d.logs?.mcp?.total ?? 0);
+    $('h-m-mcp')(mcp_total);
+    // log stats
+    const logs = d.logs || {};
+    $('h-chat-total')(logs.chat?.total ?? '—');
+    $('h-chat-ok')(logs.chat?.success ?? '—');
+    $('h-chat-err')(logs.chat?.error ?? '—');
+    $('h-img-reqs')(logs.images?.total_requests ?? '—');
+    $('h-img-total')(logs.images?.total_images ?? '—');
+    $('h-vid-total')(logs.videos?.total ?? '—');
+    drawSparkline('chart-chat', logs.daily_chat  || [], '#111827');
+    drawSparkline('chart-imgs', logs.daily_images || [], '#059669');
+  } catch(e) { console.warn('dashboard load failed', e); }
 };
 
 function drawSparkline(canvasId, data, color) {
