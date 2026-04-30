@@ -405,8 +405,12 @@ async def grok_quota(model: str = "grok-4.20-auto") -> dict:
 def _proxy_url(assets_url: str) -> str:
     """将 assets.grok.com URL 转为 xGate /v1/files/proxy 代理 URL。"""
     s = _settings()
-    host = "localhost" if s.server_host in ("0.0.0.0", "") else s.server_host
-    return f"http://{host}:{s.server_port}/v1/files/proxy?url={_url_quote(assets_url, safe='')}"
+    if s.public_base_url:
+        base = s.public_base_url.rstrip("/")
+    else:
+        host = "localhost" if s.server_host in ("0.0.0.0", "") else s.server_host
+        base = f"http://{host}:{s.server_port}"
+    return f"{base}/v1/files/proxy?url={_url_quote(assets_url, safe='')}"
 
 
 async def _fetch_bytes(settings: Settings, assets_url: str) -> bytes:
@@ -508,8 +512,12 @@ async def grok_imagine_video(
 
     if serve_path:
         s = _settings()
-        host = "localhost" if s.server_host in ("0.0.0.0", "") else s.server_host
-        video_url = f"http://{host}:{s.server_port}{serve_path}"
+        if s.public_base_url:
+            base = s.public_base_url.rstrip("/")
+        else:
+            host = "localhost" if s.server_host in ("0.0.0.0", "") else s.server_host
+            base = f"http://{host}:{s.server_port}"
+        video_url = f"{base}{serve_path}"
     else:
         video_url = None
     return {"video_url": video_url, "local_path": None, "duration_seconds": duration_seconds}

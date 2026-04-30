@@ -37,6 +37,7 @@ class Settings:
     files_auto_sync_interval_seconds: int
     mcp_enabled: bool
     mcp_default_model: str
+    public_base_url: str
 
 
 def _read_toml(path: Path) -> dict:
@@ -92,6 +93,7 @@ def load_settings() -> Settings:
         files_auto_sync_interval_seconds=_int(data, "files.auto_sync_interval_seconds", 300),
         mcp_enabled=bool(_get_nested(data, "mcp.enabled", True)),
         mcp_default_model=_str(data, "mcp.default_model", "grok-4.20-auto"),
+        public_base_url=_str(data, "server.public_base_url", ""),
     )
 
 
@@ -125,6 +127,10 @@ def save_settings(settings: Settings, path: Path = CONFIG_PATH) -> None:
             "[mcp]",
             f"enabled = {str(settings.mcp_enabled).lower()}",
             f"default_model = {json.dumps(settings.mcp_default_model, ensure_ascii=False)}",
+            "",
+            "# 可选：MCP 工具返回的代理 URL 基址（远端部署时设为外网可访问地址）",
+            "# 例: public_base_url = \"http://10.0.4.64:8024\"",
+            f"# public_base_url = {json.dumps(settings.public_base_url, ensure_ascii=False)}",
             "",
         ]
     )
