@@ -906,13 +906,12 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
 <nav>
   <span class="nav-brand">xGate</span>
   <div class="nav-tabs">
-    <button class="nav-tab" onclick="switchView('home')">首页</button>
-    <button class="nav-tab active" onclick="switchView('generate')">生成</button>
-    <button class="nav-tab" onclick="switchView('sessions')">图库</button>
-    <button class="nav-tab" onclick="switchView('logs')">日志</button>
-    <button class="nav-tab" onclick="switchView('chat')">聊天</button>
-    <button class="nav-tab" onclick="switchView('files')">Files</button>
-    <button class="nav-tab" onclick="switchView('settings')">设置</button>
+    <button class="nav-tab" data-view="home" onclick="switchView('home')">首页</button>
+    <button class="nav-tab active" data-view="create" onclick="switchView('generate')">创作</button>
+    <button class="nav-tab" data-view="logs" onclick="switchView('logs')">日志</button>
+    <button class="nav-tab" data-view="chat" onclick="switchView('chat')">聊天</button>
+    <button class="nav-tab" data-view="assets" onclick="switchView('files')">资产</button>
+    <button class="nav-tab" data-view="settings" onclick="switchView('settings')">设置</button>
   </div>
   <div class="nav-right">
     <span class="quota-chip" id="topbar-task-stats" onclick="switchView('generate');setSubTab('tasks')" title="点击查看任务队列" style="cursor:pointer;display:none">
@@ -937,6 +936,7 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
     display:flex;align-items:center;gap:2px;padding:6px 20px;">
     <button class="pill-btn active" data-st="stream" onclick="setSubTab('stream')" style="font-size:12px">图片生成</button>
     <button class="pill-btn" data-st="tasks" onclick="setSubTab('tasks')" style="font-size:12px">任务队列</button>
+    <button class="pill-btn" data-st="gallery" onclick="setSubTab('gallery')" style="font-size:12px">图库</button>
   </div>
 
   <!-- ── Stream panel ── -->
@@ -1059,14 +1059,10 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
     <div id="tasks-pager" style="margin-top:14px;display:flex;gap:8px;align-items:center;justify-content:center;font-size:12px"></div>
   </div>
 
-</div>
-
-<!-- ═══════════════════ SESSIONS VIEW ═══════════════════ -->
-<div id="view-sessions" class="view" style="padding-top:var(--nav-h);overflow-x:hidden">
-  <div style="padding:20px 20px 100px">
+  <!-- ── Gallery panel（原图库页，迁移为创作子视图）── -->
+  <div id="gen-panel-gallery" style="display:none;padding:calc(var(--nav-h) + 52px) 20px 100px;overflow-x:hidden">
     <!-- Filter bar -->
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:18px;flex-wrap:wrap">
-      <span style="font-size:20px;font-weight:700;letter-spacing:-.04em">图库</span>
       <div style="margin-left:auto;display:flex;gap:8px">
         <button class="btn btn-outline btn-sm" id="gallery-select-btn" onclick="galleryToggleSelectMode()">🗹 选择</button>
         <button class="btn btn-outline btn-sm" id="gallery-select-all" onclick="gallerySelectAll()" style="display:none">全选</button>
@@ -1078,9 +1074,8 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
     </div>
     <!-- Session list + images -->
     <div style="display:grid;grid-template-columns:220px minmax(0,1fr);gap:16px;align-items:start">
-      <div id="session-list" style="display:grid;gap:6px;position:sticky;top:calc(var(--nav-h)+12px);max-height:calc(100vh - var(--nav-h) - 60px);overflow-y:auto;padding-right:4px"></div>
+      <div id="session-list" style="display:grid;gap:6px;position:sticky;top:calc(var(--nav-h)+64px);max-height:calc(100vh - var(--nav-h) - 80px);overflow-y:auto;padding-right:4px"></div>
       <div style="min-width:0">
-        <!-- Prompt bar (shown after selecting a session) -->
         <div id="gallery-prompt-bar" style="display:none;margin-bottom:14px;padding:12px 16px;background:var(--bg-card);border:1px solid var(--border-md);border-radius:var(--radius-lg);box-shadow:var(--shadow)">
           <div style="display:flex;align-items:flex-start;gap:10px">
             <div style="flex:1;font-size:14px;line-height:1.55;color:var(--fg);overflow:hidden;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical" id="gallery-prompt-text"></div>
@@ -1093,12 +1088,13 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
         <div id="gallery-grid" class="masonry-grid"></div>
         <div id="gallery-sentinel" style="height:1px"></div>
         <div id="gallery-empty" style="display:none;color:var(--fg-subtle);text-align:center;padding:60px 0;font-size:14px">暂无图片</div>
-        <div style="display:flex;justify-content:center;padding:16px 0" id="gallery-more" style="display:none">
+        <div style="display:flex;justify-content:center;padding:16px 0" id="gallery-more">
           <button class="btn btn-outline" onclick="loadMoreGallery()">加载更多</button>
         </div>
       </div>
     </div>
   </div>
+
 </div>
 
 <!-- ═══════════════════ HOME VIEW ═══════════════════ -->
@@ -1162,9 +1158,8 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
     <input id="log-search" style="height:34px;padding:0 10px;border-radius:var(--radius);border:1px solid var(--border-md);background:var(--bg);font-size:13px;min-width:200px;flex:1" placeholder="搜索内容 / 模型 / 事件类型…" oninput="debounceLogs()">
     <div class="pill-group">
       <button class="pill-btn active" data-lt="all"    onclick="setLogType('all')"    style="font-size:12px">全部</button>
-      <button class="pill-btn" data-lt="chat"   onclick="setLogType('chat')"   style="font-size:12px">聊天</button>
-      <button class="pill-btn" data-lt="image"  onclick="setLogType('image')"  style="font-size:12px">图片</button>
-      <button class="pill-btn" data-lt="video"  onclick="setLogType('video')"  style="font-size:12px">视频</button>
+      <button class="pill-btn" data-lt="dialog" onclick="setLogType('dialog')" style="font-size:12px">对话</button>
+      <button class="pill-btn" data-lt="media"  onclick="setLogType('media')"  style="font-size:12px">媒体</button>
       <button class="pill-btn" data-lt="system" onclick="setLogType('system')" style="font-size:12px">系统</button>
     </div>
     <button class="btn btn-outline btn-sm" onclick="loadLogs(0)">↻ 刷新</button>
@@ -1561,12 +1556,12 @@ window.switchView = function(v) {
   S.view = v;
   document.querySelectorAll('.view').forEach(el => el.classList.remove('active'));
   document.getElementById('view-' + v).classList.add('active');
-  const NAV_VIEWS = ['home','generate','sessions','logs','chat','files','settings'];
-  document.querySelectorAll('.nav-tab').forEach((btn, i) => {
-    btn.classList.toggle('active', NAV_VIEWS[i] === v);
+  const VIEW_TO_NAV = {home:'home',generate:'create',logs:'logs',chat:'chat',files:'assets',settings:'settings'};
+  const activeNav = VIEW_TO_NAV[v] || v;
+  document.querySelectorAll('.nav-tab[data-view]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.view === activeNav);
   });
   if (v === 'home')     { loadHome(); }
-  if (v === 'sessions') { loadSessions(); loadGallery(false); }
   if (v === 'logs')     { loadLogs(0); }
   if (v === 'settings') { loadStatus(); loadCurrentConfig(); }
   if (v === 'chat')     { loadChatModels(); }
@@ -1578,10 +1573,12 @@ window.switchView = function(v) {
 window.setSubTab = function(st) {
   S.subTab = st;
   document.querySelectorAll('#gen-subtab-bar .pill-btn').forEach(b => b.classList.toggle('active', b.dataset.st === st));
-  document.getElementById('gen-panel-stream').style.display = st === 'stream' ? '' : 'none';
-  document.getElementById('gen-panel-tasks').style.display  = st === 'tasks'  ? '' : 'none';
+  document.getElementById('gen-panel-stream').style.display  = st === 'stream'  ? '' : 'none';
+  document.getElementById('gen-panel-tasks').style.display   = st === 'tasks'   ? '' : 'none';
+  document.getElementById('gen-panel-gallery').style.display = st === 'gallery' ? '' : 'none';
   if (st === 'tasks') { loadTasks(); startTaskPoll(); }
   else stopTaskPoll();
+  if (st === 'gallery') { loadSessions(); loadGallery(false); }
 };
 
 window.setQuality = function(q) {
@@ -2699,7 +2696,7 @@ window.taskBestEffort = async id => { try { await api('POST', `/v1/images/tasks/
 window.taskClose  = async id => { try { await api('POST', `/v1/images/tasks/${id}/close`); toast('任务已关闭（标为完成）'); loadTasks(); } catch(e) { toast(e.message,'error'); } };
 window.taskDelete = async id => { try { await api('DELETE', `/v1/images/tasks/${id}`);       toast('已删除'); loadTasks(); } catch(e) { toast(e.message,'error'); } };
 window.taskMove   = async (id, dir) => { try { await api('POST', `/v1/images/tasks/${id}/move?direction=${dir}`); loadTasks(); } catch(e) { toast(e.message,'error'); } };
-window.viewTaskSession = (sid) => { switchView('sessions'); S.gallerySession = sid; loadSessions(); loadGallery(false); };
+window.viewTaskSession = (sid) => { switchView('generate'); setSubTab('gallery'); S.gallerySession = sid; loadSessions(); loadGallery(false); };
 
 window.taskBulkPause = async () => {
   try {
@@ -2963,6 +2960,8 @@ function renderLogs(rows) {
     const ts = new Date(r.created_at * 1000).toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'});
     const badge = r.log_type === 'chat'
       ? '<span class="status-badge running" style="font-size:10px">聊天</span>'
+      : r.log_type === 'mcp'
+      ? `<span class="status-badge running" style="font-size:10px;background:#7c3aed;color:#fff">MCP·${(r.tool||'').replace('grok_','')}</span>`
       : r.log_type === 'video'
       ? '<span class="status-badge done" style="font-size:10px">视频</span>'
       : r.log_type === 'system'
@@ -2973,8 +2972,9 @@ function renderLogs(rows) {
       : '<span class="status-badge failed" style="font-size:10px">失败</span>';
     const dur = r.duration_ms != null ? (r.duration_ms/1000).toFixed(1)+'s' : '—';
     const isSystem = r.log_type === 'system';
+    const isMcp    = r.log_type === 'mcp';
     const promptText = isSystem ? (r.detail||'') : (r.prompt||'');
-    const modelText  = isSystem ? (r.event_type||'') : (r.model||'');
+    const modelText  = isSystem ? (r.event_type||'') : isMcp ? (r.tool||'') : (r.model||'');
     const prompt = esc(promptText.slice(0,60)) + (promptText.length>60?'…':'');
     const detail = r.log_type === 'image'
       ? `<span style="font-size:11px;color:var(--fg-subtle);margin-left:6px">${r.image_count||0}张 · ${esc(r.aspect_ratio||'')}</span>`

@@ -52,6 +52,7 @@ from .grok_client import (
     stream_grok_asset,
 )
 from .models import get_model
+from .db import log_db
 from . import mcp_session
 
 logger = logging.getLogger(__name__)
@@ -144,9 +145,11 @@ async def grok_chat(
     显式传 conversation_id="" 强制开新会话。
     """
     settings = _settings()
-    # Use id(ctx.session) as stable per-session key (ServerSession object is
-    # reused across all requests in the same MCP session).
     sid = str(id(ctx.session))
+    _t0 = time.time()
+    _rid = uuid.uuid4().hex
+    _status = "success"
+    _err: str | None = None
 
     if conversation_id == "":
         conv_id: str | None = None
@@ -204,11 +207,17 @@ async def grok_chat(
                 if event.follow_up_suggestions:
                     follow_ups = list(event.follow_up_suggestions)
     except GrokClientError as exc:
+        _status, _err = "error", str(exc)
+        log_db.log_mcp(request_id=_rid, tool="grok_chat", model=model, prompt=prompt[:500],
+                       status=_status, duration_ms=int((time.time() - _t0) * 1000), error=_err)
         return {"error": str(exc), "code": exc.code}
 
     text = "".join(text_parts)
     if sid and result_conv_id and result_resp_id:
         mcp_session.upsert(sid, result_conv_id, result_resp_id)
+
+    log_db.log_mcp(request_id=_rid, tool="grok_chat", model=model, prompt=prompt[:500],
+                   response=text[:200], status=_status, duration_ms=int((time.time() - _t0) * 1000))
 
     if format == "openai":
         return {
@@ -269,6 +278,7 @@ async def grok_x_search(
     limit 最大 30。
     """
     settings = _settings()
+    _t0 = time.time(); _rid = uuid.uuid4().hex
     query_str = _build_x_query(
         query,
         from_users=from_users or [], exclude_users=exclude_users or [],
@@ -288,6 +298,8 @@ async def grok_x_search(
             elif isinstance(event, GrokDone):
                 break
     except GrokClientError as exc:
+        log_db.log_mcp(request_id=_rid, tool="grok_x_search", prompt=query[:500],
+                       status="error", duration_ms=int((time.time()-_t0)*1000), error=str(exc))
         return {"error": str(exc), "code": exc.code, "query_used": query_str}
 
     normalized = []
@@ -307,6 +319,8 @@ async def grok_x_search(
             "quote": r.get("quote"),
             "parent": r.get("parent"),
         })
+    log_db.log_mcp(request_id=_rid, tool="grok_x_search", prompt=query[:500],
+                   status="success", duration_ms=int((time.time()-_t0)*1000))
     return {"query_used": query_str, "result_count": len(normalized), "results": normalized}
 
 
@@ -322,6 +336,7 @@ async def grok_web_search(
 ) -> dict:
     """Web 搜索，返回原始结构化结果（url / title / preview）。limit 最大 30。"""
     settings = _settings()
+    _t0 = time.time(); _rid = uuid.uuid4().hex
 
     parts = [query.strip()]
     if site:
@@ -348,9 +363,13 @@ async def grok_web_search(
             elif isinstance(event, GrokDone):
                 break
     except GrokClientError as exc:
+        log_db.log_mcp(request_id=_rid, tool="grok_web_search", prompt=query[:500],
+                       status="error", duration_ms=int((time.time()-_t0)*1000), error=str(exc))
         return {"error": str(exc), "code": exc.code, "query_used": query_str}
 
     results = all_results[:limit]
+    log_db.log_mcp(request_id=_rid, tool="grok_web_search", prompt=query[:500],
+                   status="success", duration_ms=int((time.time()-_t0)*1000))
     return {"query_used": query_str, "result_count": len(results), "results": results}
 
 
@@ -358,11 +377,13 @@ async def grok_web_search(
 async def grok_quota(model: str = "grok-4.20-auto") -> dict:
     """查询指定模型的剩余配额（remainingQueries / totalQueries / windowSizeSeconds）。"""
     settings = _settings()
-    # Grok rate-limits API uses mode_id ("auto"/"fast"/"think"), not model name
+    _t0 = time.time(); _rid = uuid.uuid4().hex
     spec = get_model(model)
     mode_id = spec.mode_id if spec else model
     try:
         raw = await query_rate_limits(settings, model_name=mode_id)
+        log_db.log_mcp(request_id=_rid, tool="grok_quota", model=model,
+                       status="success", duration_ms=int((time.time()-_t0)*1000))
         return {
             "model": model,
             "window_size_seconds": raw.get("windowSizeSeconds"),
@@ -370,6 +391,8 @@ async def grok_quota(model: str = "grok-4.20-auto") -> dict:
             "total_queries": raw.get("totalQueries"),
         }
     except GrokClientError as exc:
+        log_db.log_mcp(request_id=_rid, tool="grok_quota", model=model,
+                       status="error", duration_ms=int((time.time()-_t0)*1000), error=str(exc))
         return {"error": str(exc), "code": exc.code, "model": model}
 
 
@@ -404,6 +427,7 @@ async def grok_imagine(
     return_mode="base64"    → 内嵌 base64（小图可用，大图会使 tool 响应体膨胀）。
     """
     settings = _settings()
+    _t0 = time.time(); _rid = uuid.uuid4().hex
     n = max(1, min(10, n))
     try:
         image_urls, _ = await chat_imagine(
@@ -411,6 +435,8 @@ async def grok_imagine(
             image_count=n, aspect_ratio=aspect_ratio,
         )
     except GrokClientError as exc:
+        log_db.log_mcp(request_id=_rid, tool="grok_imagine", prompt=prompt[:500],
+                       status="error", duration_ms=int((time.time()-_t0)*1000), error=str(exc))
         return {"error": str(exc), "code": exc.code, "moderation": exc.code == "image_moderated"}
 
     session_id = f"mcp-{int(time.time())}-{uuid.uuid4().hex[:6]}"
@@ -438,6 +464,8 @@ async def grok_imagine(
             item["error"] = str(exc)
         images.append(item)
 
+    log_db.log_mcp(request_id=_rid, tool="grok_imagine", prompt=prompt[:500],
+                   status="success", duration_ms=int((time.time()-_t0)*1000))
     return {
         "session_id": session_id,
         "moderation": moderation,
@@ -455,6 +483,7 @@ async def grok_imagine_video(
 ) -> dict:
     """通过 Grok 生成视频（下载后本地缓存）。耗时较长（通常 1-5 分钟），请耐心等待。"""
     settings = _settings()
+    _t0 = time.time(); _rid = uuid.uuid4().hex
     session_id = f"mcp-video-{int(time.time())}-{uuid.uuid4().hex[:6]}"
     try:
         post_id = await create_video(
@@ -462,9 +491,13 @@ async def grok_imagine_video(
             duration=duration_seconds, session_id=session_id,
         )
     except GrokClientError as exc:
+        log_db.log_mcp(request_id=_rid, tool="grok_imagine_video", prompt=prompt[:500],
+                       status="error", duration_ms=int((time.time()-_t0)*1000), error=str(exc))
         return {"error": str(exc), "code": exc.code}
 
     serve_path = await get_video_link(settings, post_id)
+    log_db.log_mcp(request_id=_rid, tool="grok_imagine_video", prompt=prompt[:500],
+                   status="success", duration_ms=int((time.time()-_t0)*1000))
     if return_mode == "local_path":
         local = IMAGE_DIR / session_id / f"{post_id}.mp4"
         return {"video_url": None, "local_path": str(local), "duration_seconds": duration_seconds}
@@ -486,9 +519,12 @@ async def grok_files_list(
 ) -> dict:
     """列出 Grok Files（从云端实时查询）。kind 可按 image / video / all 过滤。"""
     settings = _settings()
+    _t0 = time.time(); _rid = uuid.uuid4().hex
     try:
         raw = await list_grok_assets(settings, page_size=min(limit + offset, 200))
     except GrokClientError as exc:
+        log_db.log_mcp(request_id=_rid, tool="grok_files_list",
+                       status="error", duration_ms=int((time.time()-_t0)*1000), error=str(exc))
         return {"error": str(exc), "code": exc.code}
 
     assets = raw.get("assets") or []
@@ -509,6 +545,8 @@ async def grok_files_list(
         })
 
     page = items[offset:offset + limit]
+    log_db.log_mcp(request_id=_rid, tool="grok_files_list",
+                   status="success", duration_ms=int((time.time()-_t0)*1000))
     return {"items": page, "total": len(items)}
 
 
@@ -516,9 +554,12 @@ async def grok_files_list(
 async def grok_files_save_local(file_ids: list[str]) -> dict:
     """将 Grok Files 下载保存到本地 data/grok-files/。传入 grok_files_list 返回的 file_id 列表。"""
     settings = _settings()
+    _t0 = time.time(); _rid = uuid.uuid4().hex
     try:
         raw = await list_grok_assets(settings, page_size=200)
     except GrokClientError as exc:
+        log_db.log_mcp(request_id=_rid, tool="grok_files_save_local", prompt=str(file_ids)[:200],
+                       status="error", duration_ms=int((time.time()-_t0)*1000), error=str(exc))
         return {"error": f"list failed: {exc}", "saved": [], "failed": []}
 
     id_map = {a.get("assetId", ""): a for a in (raw.get("assets") or [])}
@@ -539,6 +580,9 @@ async def grok_files_save_local(file_ids: list[str]) -> dict:
         except GrokClientError as exc:
             failed.append({"file_id": fid, "error": str(exc)})
 
+    status = "success" if not failed else ("error" if not saved else "success")
+    log_db.log_mcp(request_id=_rid, tool="grok_files_save_local", prompt=str(file_ids)[:200],
+                   status=status, duration_ms=int((time.time()-_t0)*1000))
     return {"saved": saved, "failed": failed}
 
 
@@ -546,6 +590,7 @@ async def grok_files_save_local(file_ids: list[str]) -> dict:
 async def grok_files_delete(file_ids: list[str]) -> dict:
     """从 Grok 云端删除文件。传入 grok_files_list 返回的 file_id 列表。"""
     settings = _settings()
+    _t0 = time.time(); _rid = uuid.uuid4().hex
     deleted: list[str] = []
     failed: list[dict] = []
 
@@ -559,6 +604,9 @@ async def grok_files_delete(file_ids: list[str]) -> dict:
         except GrokClientError as exc:
             failed.append({"file_id": fid, "error": str(exc)})
 
+    status = "success" if not failed else ("error" if not deleted else "success")
+    log_db.log_mcp(request_id=_rid, tool="grok_files_delete", prompt=str(file_ids)[:200],
+                   status=status, duration_ms=int((time.time()-_t0)*1000))
     return {"deleted": deleted, "failed": failed}
 
 
