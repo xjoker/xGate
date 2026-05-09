@@ -31,6 +31,11 @@ def get_model(model_id: str) -> ModelSpec | None:
     return _BY_ID.get(model_id)
 
 
+def get_model_specs() -> list[ModelSpec]:
+    """返回当前注册的全部模型 spec 列表（只读副本）。"""
+    return list(_models)
+
+
 def _model_dict(spec: ModelSpec, created: int) -> dict:
     return {
         "id": spec.model_id,

@@ -399,16 +399,18 @@ nav {
 #view-settings {
   padding: calc(var(--nav-h) + 24px) 28px 48px;
   max-width: 1440px; margin: 0 auto;
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
   gap: 24px;
   align-items: start;
+}
+#view-settings.active {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
 }
 .settings-section { min-width: 0; }
 .settings-section.full-width { grid-column: 1 / -1; }
 .settings-section h2 { font-size: 15px; font-weight: 700; margin-bottom: 14px; letter-spacing: -.02em; }
 @media (max-width: 900px) {
-  #view-settings { grid-template-columns: 1fr; }
+  #view-settings.active { grid-template-columns: 1fr; }
   .settings-section.full-width { grid-column: 1; }
 }
 .settings-card {
@@ -926,7 +928,7 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
     <span class="quota-chip" id="topbar-task-stats" onclick="switchView('generate');setSubTab('tasks')" title="点击查看任务队列" style="cursor:pointer;display:none">
       <span id="topbar-task-text">—</span>
     </span>
-    <div class="quota-chip" id="quota-chip" onclick="refreshQuota()" oncontextmenu="event.preventDefault();showQuotaDetails()" ondblclick="showQuotaDetails()" title="点击刷新；双击 / 右键查看详情（含 Chat 模型）">
+    <div class="quota-chip" id="quota-chip" onclick="refreshQuota()" oncontextmenu="event.preventDefault();showQuotaDetails()" ondblclick="showQuotaDetails()" title="显示最受限模型额度；点击刷新；双击 / 右键查看各模型详情">
       <span class="dot" id="quota-dot"></span>
       <span id="quota-label">额度</span>
     </div>
@@ -1294,6 +1296,17 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
 <!-- ═══════════════════ SETTINGS VIEW ═══════════════════ -->
 <div id="view-settings" class="view">
 
+  <!-- 全宽：运行状态（置顶） -->
+  <div class="settings-section full-width">
+    <h2>运行状态</h2>
+    <div class="status-grid" id="status-grid">
+      <div class="status-card"><div class="status-card-label">总请求</div><div class="status-card-value" id="s-total">—</div></div>
+      <div class="status-card"><div class="status-card-label">成功</div><div class="status-card-value" id="s-ok">—</div></div>
+      <div class="status-card"><div class="status-card-label">失败</div><div class="status-card-value" id="s-fail">—</div></div>
+      <div class="status-card"><div class="status-card-label">CF 拦截</div><div class="status-card-value" id="s-cf">—</div></div>
+    </div>
+  </div>
+
   <!-- 左列：导入 cURL -->
   <div class="settings-section">
     <h2>导入 cURL</h2>
@@ -1328,19 +1341,8 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
     </div>
   </div>
 
-  <!-- 左列：运行状态 -->
-  <div class="settings-section">
-    <h2>运行状态</h2>
-    <div class="status-grid" id="status-grid">
-      <div class="status-card"><div class="status-card-label">总请求</div><div class="status-card-value" id="s-total">—</div></div>
-      <div class="status-card"><div class="status-card-label">成功</div><div class="status-card-value" id="s-ok">—</div></div>
-      <div class="status-card"><div class="status-card-label">失败</div><div class="status-card-value" id="s-fail">—</div></div>
-      <div class="status-card"><div class="status-card-label">CF 拦截</div><div class="status-card-value" id="s-cf">—</div></div>
-    </div>
-  </div>
-
-  <!-- 右列：当前配置 -->
-  <div class="settings-section">
+  <!-- 全宽：当前配置 -->
+  <div class="settings-section full-width">
     <h2>当前配置</h2>
     <div class="settings-card" id="current-config" style="font-size:13px;color:var(--fg-muted);font-family:var(--font-mono);line-height:2"></div>
   </div>
@@ -1361,6 +1363,7 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
               <th style="padding:8px 12px;text-align:left;font-weight:600;border-bottom:1px solid var(--border-subtle);white-space:nowrap">显示名称</th>
               <th style="padding:8px 12px;text-align:center;font-weight:600;border-bottom:1px solid var(--border-subtle);white-space:nowrap">图片</th>
               <th style="padding:8px 12px;text-align:center;font-weight:600;border-bottom:1px solid var(--border-subtle);white-space:nowrap">Pro</th>
+              <th style="padding:8px 12px;text-align:center;font-weight:600;border-bottom:1px solid var(--border-subtle);white-space:nowrap">额度</th>
               <th style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)"></th>
             </tr>
           </thead>
@@ -1368,7 +1371,10 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
         </table>
       </div>
       <div style="padding:12px 16px;border-top:1px solid var(--border-subtle);display:flex;gap:8px;justify-content:space-between;align-items:center">
-        <button class="btn btn-outline btn-sm" onclick="modelsAddRow()">+ 添加模型</button>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-outline btn-sm" onclick="modelsAddRow()">+ 添加模型</button>
+          <button class="btn btn-outline btn-sm" id="models-verify-all-btn" onclick="modelsVerifyAll()">全部验证</button>
+        </div>
         <button class="btn btn-primary" onclick="modelsSave()">保存模型列表</button>
       </div>
     </div>
@@ -2866,43 +2872,80 @@ function startTaskPoll() { clearInterval(taskPollTimer); taskPollTimer = setInte
 function stopTaskPoll()  { clearInterval(taskPollTimer); }
 
 // ── Settings ───────────────────────────────────────────────────
-window.loadStatus = async function() {
-  try {
-    const d = await api('GET', '/admin/status');
-    document.getElementById('s-total').textContent = d.total_requests ?? '—';
-    document.getElementById('s-ok').textContent    = d.success_count ?? '—';
-    document.getElementById('s-fail').textContent  = d.failure_count ?? '—';
-    document.getElementById('s-cf').textContent    = d.cloudflare_challenge ? '是' : '否';
-  } catch {}
-};
+// ── Settings cache（先显示缓存再后台刷新，避免切换时空闪）──────────────────
+const _sCache = { status: null, models: null };
 
-window.loadCurrentConfig = async function() {
-  try {
-    const d = await api('GET', '/admin/status');
-    const el = document.getElementById('current-config');
-    el.innerHTML = `Cookie: ${esc(d.cookie_masked || '未配置')}<br>
+function _renderStatus(d) {
+  document.getElementById('s-total').textContent = d.total_requests ?? '—';
+  document.getElementById('s-ok').textContent    = d.success_count ?? '—';
+  document.getElementById('s-fail').textContent  = d.failure_count ?? '—';
+  document.getElementById('s-cf').textContent    = d.cloudflare_challenge ? '是' : '否';
+}
+
+function _renderCurrentConfig(d) {
+  const el = document.getElementById('current-config');
+  el.innerHTML = `Cookie: ${esc(d.cookie_masked || '未配置')}<br>
 Browser: ${esc(d.browser || '未配置')}<br>
 Proxy: ${d.proxy_configured ? '已配置' : '未配置'}<br>
 FlareSolverr: ${esc(d.flaresolverr_url || '未配置')}<br>
 日志保留: ${d.log_retention_days ?? 90} 天`;
-    // 预填非敏感字段（cookie / api_key 保持空白）
-    const set = (id, val) => { const el = document.getElementById(id); if (el && val) el.value = val; };
-    set('cfg-ua',            d.user_agent);
-    set('cfg-browser',       d.browser);
-    set('cfg-proxy',         d.proxy);
-    set('cfg-flaresolverr',  d.flaresolverr_url);
-    set('cfg-retention',     d.log_retention_days != null ? String(d.log_retention_days) : '');
+  const set = (id, val) => { const el = document.getElementById(id); if (el && val) el.value = val; };
+  set('cfg-ua',           d.user_agent);
+  set('cfg-browser',      d.browser);
+  set('cfg-proxy',        d.proxy);
+  set('cfg-flaresolverr', d.flaresolverr_url);
+  set('cfg-retention',    d.log_retention_days != null ? String(d.log_retention_days) : '');
+}
+
+window.loadStatus = async function() {
+  if (_sCache.status) _renderStatus(_sCache.status);
+  try {
+    const d = await api('GET', '/admin/status');
+    _sCache.status = d;
+    _renderStatus(d);
+  } catch {}
+};
+
+window.loadCurrentConfig = async function() {
+  if (_sCache.status) _renderCurrentConfig(_sCache.status);
+  try {
+    const d = await api('GET', '/admin/status');
+    _sCache.status = d;
+    _renderCurrentConfig(d);
   } catch {}
 };
 
 // ── Model management ─────────────────────────────────────────────────────────
 
 window.loadModels = async function() {
+  if (_sCache.models) { renderModels(_sCache.models); loadModelQuotas(); }
   try {
     const d = await api('GET', '/admin/models');
-    renderModels(d.models || []);
+    _sCache.models = d.models || [];
+    renderModels(_sCache.models);
   } catch (e) { toast('加载模型列表失败', 'error'); }
+  loadModelQuotas();
 };
+
+async function loadModelQuotas() {
+  try {
+    const c = await api('GET', '/v1/quota/chat');
+    const byModeId = {};
+    for (const q of (c.chat_quotas || [])) byModeId[q.mode_id] = q;
+    for (const row of document.querySelectorAll('#models-tbody tr')) {
+      const modeIdEl = row.querySelector('[data-f="mode_id"]');
+      const imageEl  = row.querySelector('[data-f="image_model"]');
+      const cell     = row.querySelector('.model-quota-cell');
+      if (!cell) continue;
+      if (imageEl?.checked) { cell.textContent = 'N/A'; cell.style.color = 'var(--fg-muted)'; continue; }
+      const q = byModeId[modeIdEl?.value.trim()];
+      if (!q) { cell.textContent = '—'; cell.style.color = 'var(--fg-muted)'; continue; }
+      if (q.error) { cell.textContent = '✗'; cell.style.color = '#dc2626'; continue; }
+      cell.textContent = `${q.remaining}/${q.total}`;
+      cell.style.color = q.used_pct >= 90 ? '#dc2626' : q.used_pct >= 70 ? '#d97706' : '#059669';
+    }
+  } catch {}
+}
 
 function renderModels(models) {
   const tbody = document.getElementById('models-tbody');
@@ -2911,16 +2954,19 @@ function renderModels(models) {
 
 function modelRow(m, i) {
   const val = (v) => esc(v ?? '');
+  const isImg = m.image_model;
   return `<tr data-idx="${i}" style="border-bottom:1px solid var(--border-subtle)">
     <td style="padding:6px 12px"><input class="model-input" data-f="id" value="${val(m.id)}" style="width:100%;min-width:140px;font-family:var(--font-mono);font-size:12px;padding:4px 6px;border:1px solid var(--border-md);border-radius:4px;background:var(--bg)"></td>
     <td style="padding:6px 12px"><input class="model-input" data-f="mode_id" value="${val(m.mode_id)}" style="width:100%;min-width:120px;font-family:var(--font-mono);font-size:12px;padding:4px 6px;border:1px solid var(--border-md);border-radius:4px;background:var(--bg)"></td>
     <td style="padding:6px 12px"><input class="model-input" data-f="name" value="${val(m.name)}" style="width:100%;min-width:140px;font-size:12px;padding:4px 6px;border:1px solid var(--border-md);border-radius:4px;background:var(--bg)"></td>
-    <td style="padding:6px 12px;text-align:center"><input type="checkbox" class="model-input" data-f="image_model" ${m.image_model ? 'checked' : ''} style="width:15px;height:15px;cursor:pointer"></td>
+    <td style="padding:6px 12px;text-align:center"><input type="checkbox" class="model-input" data-f="image_model" ${isImg ? 'checked' : ''} style="width:15px;height:15px;cursor:pointer"></td>
     <td style="padding:6px 12px;text-align:center"><input type="checkbox" class="model-input" data-f="enable_pro" ${m.enable_pro ? 'checked' : ''} style="width:15px;height:15px;cursor:pointer"></td>
+    <td style="padding:6px 12px;text-align:center">
+      <span class="model-quota-cell" style="font-size:12px;font-family:var(--font-mono);color:var(--fg-muted)">${isImg ? 'N/A' : '—'}</span>
+    </td>
     <td style="padding:6px 12px;white-space:nowrap">
       <div style="display:flex;gap:6px;align-items:center">
         <button class="btn btn-outline btn-sm" onclick="modelsVerify(this)" title="零消耗验证 modeId 是否在线">验证</button>
-        <span class="model-verify-badge" style="font-size:11px;white-space:nowrap"></span>
         <button class="btn btn-outline btn-sm" style="color:#dc2626;border-color:#fca5a5" onclick="modelsDeleteRow(this)">删除</button>
       </div>
     </td>
@@ -2934,36 +2980,57 @@ window.modelsAddRow = function() {
 };
 
 window.modelsDeleteRow = function(btn) {
-  btn.closest('tr').remove();
+  const row = btn.closest('tr');
+  const modelId = row.querySelector('[data-f="id"]')?.value.trim() || '此模型';
+  if (!confirm(`确认删除「${modelId}」？`)) return;
+  row.remove();
 };
 
 window.modelsVerify = async function(btn) {
   const row = btn.closest('tr');
   const modeIdEl = row.querySelector('[data-f="mode_id"]');
-  const badge = row.querySelector('.model-verify-badge');
+  const cell = row.querySelector('.model-quota-cell');
   const modeId = modeIdEl ? modeIdEl.value.trim() : '';
-  if (!modeId) { badge.textContent = '⚠ 无 Mode ID'; badge.style.color = '#f59e0b'; return; }
+  if (!modeId) { if (cell) { cell.textContent = '⚠ 无ID'; cell.style.color = '#f59e0b'; } return; }
   btn.disabled = true;
-  badge.textContent = '…';
-  badge.style.color = 'var(--fg-muted)';
+  if (cell) { cell.textContent = '…'; cell.style.color = 'var(--fg-muted)'; }
   try {
     const d = await api('GET', `/admin/models/verify?mode_id=${encodeURIComponent(modeId)}`);
-    if (d.ok) {
-      const rem = d.remaining ?? '?';
-      const tot = d.total ?? '?';
-      const wait = d.wait_seconds ? ` 冷却${d.wait_seconds}s` : '';
-      badge.textContent = `✓ ${rem}/${tot}${wait}`;
-      badge.style.color = d.remaining === 0 ? '#f59e0b' : '#059669';
-    } else {
-      badge.textContent = `✗ ${d.error || '无效'}`;
-      badge.style.color = '#dc2626';
+    if (cell) {
+      if (d.ok) {
+        const rem = d.remaining ?? '?';
+        const tot = d.total ?? '?';
+        const wait = d.wait_seconds ? ` +${d.wait_seconds}s` : '';
+        cell.textContent = `${rem}/${tot}${wait}`;
+        cell.style.color = d.remaining === 0 ? '#f59e0b' : '#059669';
+      } else {
+        cell.textContent = `✗ ${d.error || '无效'}`;
+        cell.style.color = '#dc2626';
+      }
     }
   } catch (e) {
-    badge.textContent = `✗ ${e.message}`;
-    badge.style.color = '#dc2626';
+    if (cell) { cell.textContent = `✗ ${e.message}`; cell.style.color = '#dc2626'; }
   } finally {
     btn.disabled = false;
   }
+};
+
+window.modelsVerifyAll = async function() {
+  const rows = Array.from(document.querySelectorAll('#models-tbody tr'));
+  if (!rows.length) { toast('没有模型可验证', 'error'); return; }
+  const btn = document.getElementById('models-verify-all-btn');
+  btn.disabled = true;
+  btn.textContent = '验证中…';
+  let done = 0;
+  for (const row of rows) {
+    const verifyBtn = row.querySelector('.btn');
+    if (verifyBtn) await modelsVerify(verifyBtn);
+    done++;
+    btn.textContent = `验证中 ${done}/${rows.length}`;
+  }
+  btn.disabled = false;
+  btn.textContent = '全部验证';
+  toast(`已验证 ${rows.length} 个模型`, 'success');
 };
 
 window.modelsSave = async function() {
@@ -2980,6 +3047,7 @@ window.modelsSave = async function() {
   try {
     await api('POST', '/admin/models', { models });
     toast('模型列表已保存', 'success');
+    _sCache.models = null;
     loadModels();
   } catch (e) { toast('保存失败: ' + e.message, 'error'); }
 };
@@ -3000,6 +3068,7 @@ window.importCurl = async function() {
       res.style.color = '#059669';
       res.textContent = '✓ ' + (j.message || '导入成功，冒烟通过');
       toast('cURL 导入成功', 'success');
+      _sCache.status = null;
       loadCurrentConfig();
     } else {
       res.style.color = '#dc2626';
@@ -3027,6 +3096,7 @@ window.saveConfig = async function() {
   try {
     await apiForm('POST', '/admin/config', fd);
     toast('配置已保存', 'success');
+    _sCache.status = null;
     loadCurrentConfig();
   } catch (e) { toast('保存失败: ' + e.message, 'error'); }
 };
@@ -3046,15 +3116,20 @@ window.refreshQuota = async function() {
       api('GET', '/v1/quota'),
       api('GET', '/v1/quota/chat').catch(() => ({chat_quotas: []})),
     ]);
-    const auto = d.quotas?.auto;
     const chatQ = (c.chat_quotas || []).filter(x => !x.error);
-    if (auto) {
-      // 工具栏只显示 imagine quota；chat quota 通过点击拟态框查看
-      label.textContent = `${auto.remaining}/${auto.total}`;
-      dot.className = 'dot' + (auto.used_pct >= 90 ? ' bad' : auto.used_pct >= 70 ? ' warn' : '');
-      if (d.image_blocked) toast('⚠ 额度已达90%，生图受限', 'error');
-    } else label.textContent = '额度';
-    // 额度详情拟态框（点击 chip 时打开）
+    // chip 显示最受限的 chat 模型额度（used_pct 最高的）
+    const worst = chatQ.sort((a, b) => (b.used_pct ?? 0) - (a.used_pct ?? 0))[0];
+    if (worst) {
+      label.textContent = `${worst.remaining}/${worst.total}`;
+      dot.className = 'dot' + (worst.used_pct >= 90 ? ' bad' : worst.used_pct >= 70 ? ' warn' : '');
+    } else {
+      const auto = d.quotas?.auto;
+      if (auto) {
+        label.textContent = `${auto.remaining}/${auto.total}`;
+        dot.className = 'dot' + (auto.used_pct >= 90 ? ' bad' : auto.used_pct >= 70 ? ' warn' : '');
+      } else label.textContent = '额度';
+    }
+    if (d.image_blocked) toast('⚠ 额度已达90%，生图受限', 'error');
     window._quotaSnapshot = { quotas: d.quotas, chat: chatQ, image_blocked: d.image_blocked };
   } catch { label.textContent = '额度'; _quotaCooldownEnd = 0; }
 };
@@ -3075,7 +3150,8 @@ window.showQuotaDetails = function() {
   } else {
     for (const q of s.chat) {
       const cls = q.used_pct >= 90 ? 'error' : q.used_pct >= 70 ? 'running' : 'success';
-      rows.push(_row(q.label, `${q.remaining}/${q.total} 剩余（${q.used_pct}%）`, cls));
+      const label = q.label + (q.mode_id && q.mode_id !== q.label ? ` (${q.mode_id})` : '');
+      rows.push(_row(label, `${q.remaining}/${q.total} 剩余（${q.used_pct}%）`, cls));
     }
   }
   openGenericModal('额度详情', rows.join(''));

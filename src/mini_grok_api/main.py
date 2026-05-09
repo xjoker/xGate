@@ -52,7 +52,7 @@ from .grok_client import (
     query_rate_limits,
 )
 from .image_stream import ImageStreamWorker, StreamConfig
-from .models import get_model, list_models, model_to_openai, set_models, ModelSpec
+from .models import get_model, get_model_specs, list_models, model_to_openai, set_models, ModelSpec
 from .monitor import Monitor
 from .openai_compat import (
     chat_response,
@@ -2126,33 +2126,32 @@ async def _fetch_quota(settings: Settings, mode_name: str = "auto") -> dict | No
         return None
 
 
-_CHAT_MODELS_FOR_QUOTA = [
-    # 用户面板要看的 chat model 名（实测 modelName 来源 web 端 rate-limits 请求体）
-    ("grok-420-computer-use-sa", "Grok 4 Computer Use"),
-]
-
-
 @app.get("/v1/quota/chat", tags=[_TAG_QUOTA], summary="查询 Chat 模型配额",
-         description="并发查询多个 chat 模型的 rate-limits（每 2h 窗口的剩余 query 次数）",
+         description="并发查询动态模型注册表中全部非图片模型的 rate-limits",
          dependencies=[Depends(_require_api_key)])
 async def chat_quota(settings: Annotated[Settings, Depends(_settings)]) -> JSONResponse:
     if not settings.grok_cookie:
         return _error_response("GROK_COOKIE not configured", 400, code="missing_grok_cookie")
-    out = []
-    async def _one(model_id: str, label: str) -> dict:
+    specs = [s for s in get_model_specs() if not s.image_model]
+    if not specs:
+        return JSONResponse({"chat_quotas": []})
+
+    async def _one(spec: ModelSpec) -> dict:
+        base = {"model_id": spec.model_id, "mode_id": spec.mode_id, "label": spec.name}
         try:
-            d = await query_rate_limits(settings, model_name=model_id)
+            d = await query_rate_limits(settings, model_name=spec.mode_id)
             remaining = int(d.get("remainingQueries") or 0)
             total = int(d.get("totalQueries") or remaining)
             window = int(d.get("windowSizeSeconds") or 7200)
             used = max(total - remaining, 0)
             pct = round(used / total * 100, 1) if total > 0 else 0.0
-            return {"model_id": model_id, "label": label, "remaining": remaining,
-                    "total": total, "used": used, "used_pct": pct, "window_seconds": window}
+            return {**base, "remaining": remaining, "total": total,
+                    "used": used, "used_pct": pct, "window_seconds": window}
         except Exception as exc:
-            return {"model_id": model_id, "label": label, "error": str(exc)}
-    out = await asyncio.gather(*[_one(m, l) for m, l in _CHAT_MODELS_FOR_QUOTA])
-    return JSONResponse({"chat_quotas": out})
+            return {**base, "error": str(exc)}
+
+    out = await asyncio.gather(*[_one(s) for s in specs])
+    return JSONResponse({"chat_quotas": list(out)})
 
 
 class _ChatImagineRequest(BaseModel):
