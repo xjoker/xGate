@@ -1130,29 +1130,8 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
 
   <!-- Quota section -->
   <div style="font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">配额监控</div>
-  <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:20px" id="h-quota-grid">
-    <div class="settings-card" style="padding:14px 16px">
-      <div style="font-size:11px;font-weight:600;color:#6b7280;margin-bottom:8px">AUTO 模式</div>
-      <div style="display:flex;align-items:baseline;gap:4px;margin-bottom:4px">
-        <span id="h-q-auto-rem" style="font-size:24px;font-weight:700">—</span>
-        <span id="h-q-auto-total" style="font-size:12px;color:#9ca3af">/ —</span>
-      </div>
-      <div style="height:4px;border-radius:2px;background:#e5e7eb;overflow:hidden;margin-bottom:6px">
-        <div id="h-q-auto-bar" style="height:100%;width:0%;background:#059669;transition:width .3s"></div>
-      </div>
-      <div style="font-size:11px;color:#6b7280"><span id="h-q-auto-pct">—</span> 已用</div>
-    </div>
-    <div class="settings-card" style="padding:14px 16px">
-      <div style="font-size:11px;font-weight:600;color:#6b7280;margin-bottom:8px">FAST 模式</div>
-      <div style="display:flex;align-items:baseline;gap:4px;margin-bottom:4px">
-        <span id="h-q-fast-rem" style="font-size:24px;font-weight:700">—</span>
-        <span id="h-q-fast-total" style="font-size:12px;color:#9ca3af">/ —</span>
-      </div>
-      <div style="height:4px;border-radius:2px;background:#e5e7eb;overflow:hidden;margin-bottom:6px">
-        <div id="h-q-fast-bar" style="height:100%;width:0%;background:#3b82f6;transition:width .3s"></div>
-      </div>
-      <div style="font-size:11px;color:#6b7280"><span id="h-q-fast-pct">—</span> 已用</div>
-    </div>
+  <div id="h-quota-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;margin-bottom:20px">
+    <div class="settings-card" style="padding:14px 16px;color:var(--fg-muted);font-size:13px">加载中…</div>
   </div>
 
   <!-- Task queue + service status row -->
@@ -1283,11 +1262,24 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
   </div>
 
   <!-- Pagination -->
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-top:12px;font-size:13px;color:var(--fg-muted)">
+  <div style="display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;margin-top:12px;gap:8px;font-size:13px;color:var(--fg-muted)">
     <span id="log-total-txt"></span>
-    <div style="display:flex;gap:6px">
-      <button class="btn btn-outline btn-sm" id="log-prev" onclick="loadLogs(logState.offset - logState.limit)" disabled>← 上一页</button>
-      <button class="btn btn-outline btn-sm" id="log-next" onclick="loadLogs(logState.offset + logState.limit)" disabled>下一页 →</button>
+    <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+      <label style="font-size:12px;color:var(--fg-muted)">每页</label>
+      <select id="log-per-page" style="height:28px;padding:0 6px;border-radius:var(--radius);border:1px solid var(--border-md);background:var(--bg);font-size:12px;cursor:pointer" onchange="logChangePerPage(this.value)">
+        <option value="20">20</option>
+        <option value="50" selected>50</option>
+        <option value="100">100</option>
+        <option value="200">200</option>
+      </select>
+      <button class="btn btn-outline btn-sm" id="log-first" onclick="loadLogs(0)" disabled>«</button>
+      <button class="btn btn-outline btn-sm" id="log-prev" onclick="loadLogs(logState.offset - logState.limit)" disabled>‹ 上一页</button>
+      <span id="log-page-info" style="font-size:12px;white-space:nowrap"></span>
+      <button class="btn btn-outline btn-sm" id="log-next" onclick="loadLogs(logState.offset + logState.limit)" disabled>下一页 ›</button>
+      <button class="btn btn-outline btn-sm" id="log-last" onclick="loadLogs(Math.floor((logState.total-1)/logState.limit)*logState.limit)" disabled>»</button>
+      <input id="log-jump" type="number" min="1" placeholder="跳转页" style="width:64px;height:28px;padding:0 6px;border-radius:var(--radius);border:1px solid var(--border-md);background:var(--bg);font-size:12px;text-align:center"
+        onkeydown="if(event.key==='Enter')logJumpPage(this.value)">
+      <button class="btn btn-outline btn-sm" onclick="logJumpPage(document.getElementById('log-jump').value)">Go</button>
     </div>
   </div>
 </div><!-- inner -->
@@ -3179,9 +3171,36 @@ window.loadHome = async function() {
     // version
     const vEl = document.getElementById('h-version');
     if (vEl && d.version) vEl.textContent = 'v' + d.version;
-    // quotas
-    _setQuotaCard('auto', '#059669', d.quotas?.auto);
-    _setQuotaCard('fast', '#3b82f6', d.quotas?.fast);
+    // quotas — dynamic per-model cards
+    const qGrid = document.getElementById('h-quota-grid');
+    if (qGrid) {
+      const mqs = d.model_quotas || [];
+      const PALETTE = ['#059669','#3b82f6','#7c3aed','#f59e0b','#ec4899','#06b6d4','#84cc16','#f97316'];
+      if (!mqs.length) {
+        qGrid.innerHTML = '<div class="settings-card" style="padding:14px 16px;color:var(--fg-muted);font-size:13px">暂无配额数据（Cookie 未配置？）</div>';
+      } else {
+        qGrid.innerHTML = mqs.map((q, i) => {
+          const color = PALETTE[i % PALETTE.length];
+          if (q.error) return `<div class="settings-card" style="padding:14px 16px">
+            <div style="font-size:11px;font-weight:600;color:#6b7280;margin-bottom:8px">${esc(q.name)}</div>
+            <div style="color:#dc2626;font-size:12px">✗ 查询失败</div>
+          </div>`;
+          const pct = q.used_pct ?? 0;
+          const barColor = pct >= 90 ? '#dc2626' : pct >= 70 ? '#d97706' : color;
+          return `<div class="settings-card" style="padding:14px 16px">
+            <div style="font-size:11px;font-weight:600;color:#6b7280;margin-bottom:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(q.name)} (${esc(q.mode_id)})">${esc(q.name)}</div>
+            <div style="display:flex;align-items:baseline;gap:4px;margin-bottom:4px">
+              <span style="font-size:24px;font-weight:700;color:${barColor}">${q.remaining ?? '—'}</span>
+              <span style="font-size:12px;color:#9ca3af">/ ${q.total ?? '—'}</span>
+            </div>
+            <div style="height:4px;border-radius:2px;background:#e5e7eb;overflow:hidden;margin-bottom:6px">
+              <div style="height:100%;width:${Math.min(pct,100)}%;background:${barColor};transition:width .3s"></div>
+            </div>
+            <div style="font-size:11px;color:#6b7280">${pct}% 已用</div>
+          </div>`;
+        }).join('');
+      }
+    }
     // tasks
     const by = d.tasks?.by_status || {};
     const $ = id => { const e = document.getElementById(id); return e ? (v => { e.textContent = v; }) : () => {}; };
@@ -3296,11 +3315,32 @@ window.loadLogs = async function(offset = 0) {
     const d = await api('GET', '/v1/logs?' + params);
     logState.total = d.total || 0;
     renderLogs(d.data || []);
+    const cur = Math.floor(logState.offset / logState.limit) + 1;
+    const tot = Math.max(1, Math.ceil(logState.total / logState.limit));
     document.getElementById('log-total-txt').textContent =
-      `共 ${logState.total} 条，第 ${logState.offset + 1}–${Math.min(logState.offset + logState.limit, logState.total)} 条`;
-    document.getElementById('log-prev').disabled = logState.offset <= 0;
-    document.getElementById('log-next').disabled = logState.offset + logState.limit >= logState.total;
+      `共 ${logState.total} 条`;
+    const pageInfo = document.getElementById('log-page-info');
+    if (pageInfo) pageInfo.textContent = `${cur} / ${tot} 页`;
+    const atStart = logState.offset <= 0;
+    const atEnd   = logState.offset + logState.limit >= logState.total;
+    document.getElementById('log-first').disabled = atStart;
+    document.getElementById('log-prev').disabled  = atStart;
+    document.getElementById('log-next').disabled  = atEnd;
+    document.getElementById('log-last').disabled  = atEnd;
   } catch(e) { toast('日志加载失败: ' + e.message, 'error'); }
+};
+
+window.logChangePerPage = function(val) {
+  logState.limit = parseInt(val) || 50;
+  loadLogs(0);
+};
+
+window.logJumpPage = function(val) {
+  const tot = Math.max(1, Math.ceil(logState.total / logState.limit));
+  const p = Math.max(1, Math.min(parseInt(val) || 1, tot));
+  loadLogs((p - 1) * logState.limit);
+  const el = document.getElementById('log-jump');
+  if (el) el.value = '';
 };
 
 function renderLogs(rows) {

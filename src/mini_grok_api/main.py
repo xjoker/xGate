@@ -1328,6 +1328,8 @@ async def videos_generate(
     prompt_text = req.prompt.strip()
     aspect_ratio = req.aspect_ratio or "16:9"
     resolution = req.resolution or "480p"
+    logger.info("video: prompt=%r duration=%ss resolution=%s aspect=%s",
+                prompt_text[:80], duration_sec, resolution, aspect_ratio)
     import uuid as _uuid
     session_id = str(_uuid.uuid4())
     video_id: str | None = None
@@ -1435,6 +1437,8 @@ async def images_generations(
     monitor.record_start()
     prompt = req.prompt.strip()
     aspect_ratio = resolve_aspect_ratio(req.size)
+    logger.info("image: model=%s prompt=%r aspect=%s n=%d",
+                req.model, prompt[:80], aspect_ratio, req.n)
     session_id = str(__import__("uuid").uuid4())
     session_dir = _init_session(session_id, prompt=prompt, source="api", aspect_ratio=aspect_ratio)
     t0 = time.monotonic()
@@ -1516,6 +1520,7 @@ async def chat_completions(
         return _error_response("message content cannot be empty", 400, code="empty_message")
 
     monitor.record_start()
+    logger.info("chat: model=%s stream=%s prompt_len=%d", req.model, req.stream, len(prompt))
     include_usage = bool(req.stream_options and req.stream_options.include_usage)
     max_out = req.max_completion_tokens or req.max_tokens
     if req.stream:
@@ -1559,6 +1564,8 @@ async def chat_completions(
                     yield sse_data(stream_usage_chunk(rid, req.model, prompt, "".join(chunks)))
                 yield "data: [DONE]\n\n"
                 monitor.record_success()
+                logger.info("chat: model=%s done stream=True in %.1fs chunks=%d",
+                            req.model, time.monotonic() - t0, len(chunks))
                 log_db.log_chat(
                     request_id=rid, model=req.model, prompt=prompt,
                     response="".join(chunks),
@@ -1609,6 +1616,8 @@ async def chat_completions(
         )
         return _error_response("Internal server error", 500)
 
+    logger.info("chat: model=%s done stream=False in %.1fs len=%d",
+                req.model, time.monotonic() - t0, len(content))
     finish_reason = "stop"
     if max_out is not None and max(1, len(content) // 4) >= max_out:
         finish_reason = "length"
@@ -2120,6 +2129,7 @@ async def _fetch_quota(settings: Settings, mode_name: str = "auto") -> dict | No
             result["low_effort"] = low
         if high is not None:
             result["high_effort"] = high
+        logger.info("quota: mode=%s remaining=%d/%d used=%.1f%%", mode_name, int(remaining), int(total), pct)
         return result
     except Exception as exc:
         logger.warning("quota fetch failed: mode=%s error=%s", mode_name, exc)
@@ -2145,6 +2155,8 @@ async def chat_quota(settings: Annotated[Settings, Depends(_settings)]) -> JSONR
             window = int(d.get("windowSizeSeconds") or 7200)
             used = max(total - remaining, 0)
             pct = round(used / total * 100, 1) if total > 0 else 0.0
+            logger.info("quota/chat: %s (mode=%s) remaining=%d/%d used=%.1f%%",
+                        spec.model_id, spec.mode_id, remaining, total, pct)
             return {**base, "remaining": remaining, "total": total,
                     "used": used, "used_pct": pct, "window_seconds": window}
         except Exception as exc:
@@ -2276,6 +2288,7 @@ async def quota_check(settings: Annotated[Settings, Depends(_settings)]) -> JSON
         duration_ms=ms,
         detail=" | ".join(detail_parts),
     )
+    logger.info("quota check: %s in %dms", " | ".join(detail_parts) if detail_parts else "no data", ms)
 
     return JSONResponse({
         "quotas": quotas,
@@ -2363,6 +2376,8 @@ async def update_config(
     if patch:
         old_api_key = settings_store.get().api_key
         settings_store.update(**patch)
+        safe_keys = {k: ("***" if k in ("api_key", "grok_cookie") else v) for k, v in patch.items()}
+        logger.info("config updated: %s", safe_keys)
         # api_key 轮换：撤销所有 cookie session，强制所有浏览器重新登录。
         # 这里在 update 之后做，确保配置已落盘。
         if new_api_key is not None and new_api_key != old_api_key:
@@ -2470,6 +2485,7 @@ async def admin_models_update(req: _ModelsUpdateRequest) -> JSONResponse:
     if not cleaned:
         raise HTTPException(status_code=400, detail="模型列表不能为空")
     settings_store.update(chat_models=tuple(cleaned))
+    logger.info("models: registry updated with %d models: %s", len(cleaned), [m.get("id") for m in cleaned])
     _apply_models(settings_store.get())
     return JSONResponse({"ok": True, "count": len(cleaned)})
 
@@ -2496,8 +2512,23 @@ async def admin_status(settings: Annotated[Settings, Depends(_settings)]) -> dic
          description="一次性返回 Dashboard 所需全部数据：配额、任务统计、日志统计、运行状态。",
          dependencies=[Depends(_require_api_key)])
 async def admin_dashboard(settings: Annotated[Settings, Depends(_settings)]) -> JSONResponse:
-    quota_results = await asyncio.gather(*[_fetch_quota(settings, m) for m in _QUOTA_MODES])
-    quotas = {r["mode"]: r for r in quota_results if r}
+    # 按动态模型注册表查询，每个 mode_id 只查一次
+    chat_specs = [s for s in get_model_specs() if not s.image_model]
+    seen_modes: dict[str, ModelSpec] = {}
+    for s in chat_specs:
+        if s.mode_id not in seen_modes:
+            seen_modes[s.mode_id] = s
+    quota_results = await asyncio.gather(*[_fetch_quota(settings, mid) for mid in seen_modes])
+    model_quotas: list[dict] = []
+    for (mode_id, spec), q in zip(seen_modes.items(), quota_results):
+        if q:
+            entry = {"model_id": spec.model_id, "mode_id": mode_id, "name": spec.name}
+            entry.update({k: v for k, v in q.items() if k != "mode"})
+            model_quotas.append(entry)
+        else:
+            model_quotas.append({"model_id": spec.model_id, "mode_id": mode_id, "name": spec.name, "error": "fetch failed"})
+    ok_count = sum(1 for q in model_quotas if "error" not in q)
+    logger.info("dashboard: quota for %d/%d models ok", ok_count, len(model_quotas))
     log_stats = log_db.stats()
     task_stats = task_queue.stats()
     all_tasks = task_queue.list_tasks()
@@ -2509,7 +2540,7 @@ async def admin_dashboard(settings: Annotated[Settings, Depends(_settings)]) -> 
     snap = monitor.snapshot()
     return JSONResponse({
         "version": app.version,
-        "quotas": quotas,
+        "model_quotas": model_quotas,
         "tasks": {**task_stats, "total_moderated": total_moderated},
         "recent_tasks": recent_tasks,
         "logs": log_stats,
