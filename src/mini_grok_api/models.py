@@ -1,4 +1,4 @@
-"""模型注册表，MVP 先使用固定清单。"""
+"""模型注册表。模型列表完全由 mini.toml [[models.chat]] 驱动，启动时由 main.py 注入。"""
 
 from __future__ import annotations
 
@@ -15,17 +15,16 @@ class ModelSpec:
     enable_pro: bool = field(default=False)
 
 
-MODELS: tuple[ModelSpec, ...] = (
-    ModelSpec("grok-4.20-fast", "fast", "Grok 4.20 Fast"),
-    ModelSpec("grok-4.20-auto", "auto", "Grok 4.20 Auto"),
-    ModelSpec("grok-4.20-expert", "expert", "Grok 4.20 Expert"),
-    ModelSpec("grok-4.20-heavy", "heavy", "Grok 4.20 Heavy"),
-    ModelSpec("grok-4.3-beta", "grok-420-computer-use-sa", "Grok 4.3 Beta"),
-    ModelSpec("grok-imagine", "imagine", "Grok Imagine (Speed)", image_model=True, enable_pro=False),
-    ModelSpec("grok-imagine-pro", "imagine", "Grok Imagine Pro (Quality)", image_model=True, enable_pro=True),
-)
+# 运行时动态列表，由 set_models() 填充
+_models: list[ModelSpec] = []
+_BY_ID: dict[str, ModelSpec] = {}
 
-_BY_ID = {item.model_id: item for item in MODELS}
+
+def set_models(specs: list[ModelSpec]) -> None:
+    """全量替换模型列表（启动时 + 管理接口更新时调用）。"""
+    global _models, _BY_ID
+    _models = list(specs)
+    _BY_ID = {item.model_id: item for item in _models}
 
 
 def get_model(model_id: str) -> ModelSpec | None:
@@ -39,6 +38,7 @@ def _model_dict(spec: ModelSpec, created: int) -> dict:
         "created": created,
         "owned_by": "xai",
         "name": spec.name,
+        "image_model": spec.image_model,
         "permission": [],
         "root": spec.model_id,
         "parent": None,
@@ -47,7 +47,7 @@ def _model_dict(spec: ModelSpec, created: int) -> dict:
 
 def list_models() -> list[dict]:
     created = int(time.time())
-    return [_model_dict(item, created) for item in MODELS]
+    return [_model_dict(item, created) for item in _models]
 
 
 def model_to_openai(spec: ModelSpec) -> dict:

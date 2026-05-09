@@ -815,8 +815,11 @@ async def chat_imagine(
 async def query_rate_limits(settings: Settings, *, model_name: str) -> dict[str, Any]:
     """查询指定 model 的 chat 配额（POST /rest/rate-limits）。
 
-    Response 示例: {"windowSizeSeconds":7200,"remainingQueries":38,"totalQueries":50,
-                   "lowEffortRateLimits":null,"highEffortRateLimits":null}
+    Response 示例（正常）: {"windowSizeSeconds":7200,"remainingQueries":38,"totalQueries":50,
+                          "lowEffortRateLimits":null,"highEffortRateLimits":null}
+    Response 示例（限速）: {"windowSizeSeconds":7200,"remainingQueries":0,"waitTimeSeconds":2429,
+                          "totalQueries":25,"lowEffortRateLimits":null,"highEffortRateLimits":null}
+    waitTimeSeconds 仅在 remainingQueries==0 时出现，表示距配额重置的剩余秒数。
     """
     if not settings.grok_cookie:
         raise GrokClientError("GROK_COOKIE is not configured", status_code=400, code="missing_grok_cookie")

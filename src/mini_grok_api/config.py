@@ -19,6 +19,19 @@ _DEFAULT_UA = (
     "(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
 )
 
+# 首次运行（TOML 中无 [[models.chat]] 时）使用的默认模型列表
+DEFAULT_CHAT_MODELS: tuple[dict, ...] = (
+    # Chat 模型（modeId 对应 grok.com 内部路由）
+    {"id": "grok-4.20-fast",   "mode_id": "fast",                    "name": "Grok 4.20 Fast",   "image_model": False, "enable_pro": False},
+    {"id": "grok-4.20-auto",   "mode_id": "auto",                    "name": "Grok 4.20 Auto",   "image_model": False, "enable_pro": False},
+    {"id": "grok-4.20-expert", "mode_id": "expert",                  "name": "Grok 4.20 Expert", "image_model": False, "enable_pro": False},
+    {"id": "grok-4.20-heavy",  "mode_id": "heavy",                   "name": "Grok 4.20 Heavy",  "image_model": False, "enable_pro": False},
+    {"id": "grok-4.3-beta",    "mode_id": "grok-420-computer-use-sa","name": "Grok 4.3 Beta",    "image_model": False, "enable_pro": False},
+    # 图片生成模型（走 /rest/media/image 专用接口，modeId=imagine）
+    {"id": "grok-imagine-image-lite", "mode_id": "imagine", "name": "Grok Imagine Image Lite", "image_model": True, "enable_pro": False},
+    {"id": "grok-imagine-image",      "mode_id": "imagine", "name": "Grok Imagine Image",      "image_model": True, "enable_pro": True},
+)
+
 
 @dataclass(frozen=True, slots=True)
 class Settings:
@@ -38,6 +51,7 @@ class Settings:
     mcp_enabled: bool
     mcp_default_model: str
     public_base_url: str
+    chat_models: tuple  # list of dicts: {id, mode_id, name, image_model, enable_pro}
 
 
 def _read_toml(path: Path) -> dict:
@@ -94,6 +108,7 @@ def load_settings() -> Settings:
         mcp_enabled=bool(_get_nested(data, "mcp.enabled", True)),
         mcp_default_model=_str(data, "mcp.default_model", "grok-4.20-auto"),
         public_base_url=_str(data, "server.public_base_url", ""),
+        chat_models=tuple(_get_nested(data, "models.chat", None) or DEFAULT_CHAT_MODELS),
     )
 
 
@@ -104,6 +119,7 @@ def save_settings(settings: Settings, path: Path = CONFIG_PATH) -> None:
             "[server]",
             f"host = {json.dumps(settings.server_host, ensure_ascii=False)}",
             f"port = {settings.server_port}",
+            f"public_base_url = {json.dumps(settings.public_base_url, ensure_ascii=False)}",
             "",
             "[auth]",
             f"api_key = {json.dumps(settings.api_key, ensure_ascii=False)}",
@@ -128,12 +144,20 @@ def save_settings(settings: Settings, path: Path = CONFIG_PATH) -> None:
             f"enabled = {str(settings.mcp_enabled).lower()}",
             f"default_model = {json.dumps(settings.mcp_default_model, ensure_ascii=False)}",
             "",
-            "# 可选：MCP 工具返回的代理 URL 基址（远端部署时设为外网可访问地址）",
-            "# 例: public_base_url = \"http://10.0.4.64:8024\"",
-            f"# public_base_url = {json.dumps(settings.public_base_url, ensure_ascii=False)}",
             "",
         ]
     )
+    # 追加 [[models.chat]] 数组（TOML array of tables 必须在文件末尾）
+    for m in settings.chat_models:
+        if not isinstance(m, dict) or not m.get("id"):
+            continue
+        content += "[[models.chat]]\n"
+        content += f"id = {json.dumps(str(m.get('id', '')), ensure_ascii=False)}\n"
+        content += f"mode_id = {json.dumps(str(m.get('mode_id', '')), ensure_ascii=False)}\n"
+        content += f"name = {json.dumps(str(m.get('name', m.get('id', ''))), ensure_ascii=False)}\n"
+        content += f"image_model = {str(bool(m.get('image_model', False))).lower()}\n"
+        content += f"enable_pro = {str(bool(m.get('enable_pro', False))).lower()}\n"
+        content += "\n"
     path.write_text(content, encoding="utf-8")
 
 

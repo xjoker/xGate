@@ -392,12 +392,28 @@ async def grok_quota(model: str = "grok-4.20-auto") -> dict:
         log_db.log_mcp(request_id=_rid, tool="grok_quota", model=model,
                        response=f"remaining={raw.get('remainingQueries')}/{raw.get('totalQueries')}",
                        status="success", duration_ms=int((time.time()-_t0)*1000))
-        return {
+        result: dict[str, Any] = {
             "model": model,
             "window_size_seconds": raw.get("windowSizeSeconds"),
             "remaining_queries": raw.get("remainingQueries"),
             "total_queries": raw.get("totalQueries"),
         }
+        wait = raw.get("waitTimeSeconds")
+        if wait is not None:
+            result["wait_time_seconds"] = int(wait)
+        for key, field in (("low_effort", "lowEffortRateLimits"), ("high_effort", "highEffortRateLimits")):
+            nested = raw.get(field)
+            if nested and isinstance(nested, dict):
+                parsed: dict[str, Any] = {}
+                if (r := nested.get("remainingQueries")) is not None:
+                    parsed["remaining_queries"] = int(r)
+                if (t := nested.get("totalQueries")) is not None:
+                    parsed["total_queries"] = int(t)
+                if (w := nested.get("waitTimeSeconds")) is not None:
+                    parsed["wait_time_seconds"] = int(w)
+                if parsed:
+                    result[key] = parsed
+        return result
     except GrokClientError as exc:
         log_db.log_mcp(request_id=_rid, tool="grok_quota", model=model,
                        status="error", duration_ms=int((time.time()-_t0)*1000), error=str(exc))

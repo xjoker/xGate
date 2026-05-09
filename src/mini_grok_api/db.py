@@ -460,7 +460,9 @@ class LogDB:
         if not all_rows:
             return [], total
 
-        if len(tables) > 0 or log_type in ("all", "system"):
+        if len(tables) > 1:
+            # 多 table 合并时需要在内存中重新排序并分页；
+            # 单 table 或纯 system 查询时 SQL 已经完成了 OFFSET/LIMIT，不能再切片。
             all_rows.sort(key=lambda x: x["created_at"], reverse=True)
             all_rows = all_rows[offset: offset + limit]
 

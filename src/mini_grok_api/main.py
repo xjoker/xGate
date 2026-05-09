@@ -52,7 +52,7 @@ from .grok_client import (
     query_rate_limits,
 )
 from .image_stream import ImageStreamWorker, StreamConfig
-from .models import get_model, list_models, model_to_openai
+from .models import get_model, list_models, model_to_openai, set_models, ModelSpec
 from .monitor import Monitor
 from .openai_compat import (
     chat_response,
@@ -129,6 +129,24 @@ _TAGS_META = [
 ]
 
 settings_store = SettingsStore(load_settings())
+
+def _apply_models(settings: Settings) -> None:
+    """从 settings.chat_models 全量加载模型注册表。"""
+    specs = [
+        ModelSpec(
+            model_id=m["id"],
+            mode_id=m["mode_id"],
+            name=m.get("name", m["id"]),
+            image_model=bool(m.get("image_model", False)),
+            enable_pro=bool(m.get("enable_pro", False)),
+        )
+        for m in settings.chat_models
+        if isinstance(m, dict) and m.get("id") and m.get("mode_id")
+    ]
+    set_models(specs)
+
+_apply_models(settings_store.get())
+
 monitor = Monitor()
 ws_gateway = WsGateway()
 image_stream_worker = ImageStreamWorker()
@@ -2060,6 +2078,20 @@ _QUOTA_MODES = {
 _IMAGE_QUOTA_MODE = "auto"
 
 
+def _parse_effort_limits(d: dict | None) -> dict | None:
+    """解析 lowEffortRateLimits / highEffortRateLimits 嵌套对象。"""
+    if not d or not isinstance(d, dict):
+        return None
+    result: dict = {}
+    if (r := d.get("remainingQueries")) is not None:
+        result["remaining_queries"] = int(r)
+    if (t := d.get("totalQueries")) is not None:
+        result["total_queries"] = int(t)
+    if (w := d.get("waitTimeSeconds")) is not None:
+        result["wait_time_seconds"] = int(w)
+    return result or None
+
+
 async def _fetch_quota(settings: Settings, mode_name: str = "auto") -> dict | None:
     """POST /rest/rate-limits for a mode, return parsed quota or None."""
     try:
@@ -2071,7 +2103,7 @@ async def _fetch_quota(settings: Settings, mode_name: str = "auto") -> dict | No
         window = body.get("windowSizeSeconds") or 72000
         used = total - remaining
         pct = round(used / total * 100, 1) if total > 0 else 0.0
-        return {
+        result: dict = {
             "mode": mode_name,
             "remaining": int(remaining),
             "total": int(total),
@@ -2079,6 +2111,16 @@ async def _fetch_quota(settings: Settings, mode_name: str = "auto") -> dict | No
             "used_pct": pct,
             "window_seconds": int(window),
         }
+        wait = body.get("waitTimeSeconds")
+        if wait is not None:
+            result["wait_time_seconds"] = int(wait)
+        low = _parse_effort_limits(body.get("lowEffortRateLimits"))
+        high = _parse_effort_limits(body.get("highEffortRateLimits"))
+        if low is not None:
+            result["low_effort"] = low
+        if high is not None:
+            result["high_effort"] = high
+        return result
     except Exception as exc:
         logger.warning("quota fetch failed: mode=%s error=%s", mode_name, exc)
         return None
@@ -2369,6 +2411,68 @@ async def logs_query(
 async def cleanup_logs(settings: Annotated[Settings, Depends(_settings)]) -> JSONResponse:
     deleted = log_db.cleanup(settings.log_retention_days)
     return JSONResponse({"ok": True, "deleted": deleted})
+
+
+# ---------------------------------------------------------------------------
+# Model management API
+# ---------------------------------------------------------------------------
+
+@app.get("/admin/models", tags=[_TAG_ADMIN], summary="获取模型列表",
+         description="返回当前配置的完整模型列表。",
+         dependencies=[Depends(_require_api_key)])
+async def admin_models_get(settings: Annotated[Settings, Depends(_settings)]) -> JSONResponse:
+    return JSONResponse({"models": list(settings.chat_models)})
+
+
+@app.get("/admin/models/verify", tags=[_TAG_ADMIN], summary="验证模型 modeId 是否有效",
+         description="对指定 modeId 调用 /rest/rate-limits，零消耗验证模型是否在线可用。",
+         dependencies=[Depends(_require_api_key)])
+async def admin_models_verify(
+    mode_id: str,
+    settings: Annotated[Settings, Depends(_settings)],
+) -> JSONResponse:
+    if not mode_id.strip():
+        raise HTTPException(status_code=400, detail="mode_id 不能为空")
+    try:
+        raw = await query_rate_limits(settings, mode_id.strip())
+        remaining = raw.get("remainingQueries")
+        total = raw.get("totalQueries")
+        wait = raw.get("waitTimeSeconds")
+        return JSONResponse({
+            "ok": True,
+            "mode_id": mode_id,
+            "remaining": remaining,
+            "total": total,
+            "wait_seconds": wait,
+        })
+    except Exception as e:
+        return JSONResponse({"ok": False, "mode_id": mode_id, "error": str(e)})
+
+
+class _ModelsUpdateRequest(BaseModel):
+    models: list[dict]
+
+
+@app.post("/admin/models", tags=[_TAG_ADMIN], summary="更新模型列表",
+          description="全量替换模型列表并持久化到 mini.toml。每项需要 `id`、`mode_id`、`name`，可选 `image_model`、`enable_pro`。",
+          dependencies=[Depends(_require_api_key)])
+async def admin_models_update(req: _ModelsUpdateRequest) -> JSONResponse:
+    cleaned = [
+        {
+            "id": str(m.get("id", "")).strip(),
+            "mode_id": str(m.get("mode_id", "")).strip(),
+            "name": str(m.get("name", m.get("id", ""))).strip(),
+            "image_model": bool(m.get("image_model", False)),
+            "enable_pro": bool(m.get("enable_pro", False)),
+        }
+        for m in req.models
+        if isinstance(m, dict) and str(m.get("id", "")).strip() and str(m.get("mode_id", "")).strip()
+    ]
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="模型列表不能为空")
+    settings_store.update(chat_models=tuple(cleaned))
+    _apply_models(settings_store.get())
+    return JSONResponse({"ok": True, "count": len(cleaned)})
 
 
 @app.get("/admin/status", tags=[_TAG_ADMIN], summary="运行状态快照",

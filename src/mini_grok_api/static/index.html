@@ -1327,6 +1327,34 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
   </div>
 
   <div class="settings-section">
+    <h2>模型管理</h2>
+    <div class="settings-card" style="padding:0;overflow:hidden">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border-subtle);font-size:13px;color:var(--fg-muted)">
+        模型列表保存在 mini.toml 中，修改后立即生效，无需重启。
+      </div>
+      <div style="overflow-x:auto">
+        <table id="models-table" style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead>
+            <tr style="background:var(--bg-subtle)">
+              <th style="padding:8px 12px;text-align:left;font-weight:600;border-bottom:1px solid var(--border-subtle);white-space:nowrap">模型 ID</th>
+              <th style="padding:8px 12px;text-align:left;font-weight:600;border-bottom:1px solid var(--border-subtle);white-space:nowrap">Mode ID</th>
+              <th style="padding:8px 12px;text-align:left;font-weight:600;border-bottom:1px solid var(--border-subtle);white-space:nowrap">显示名称</th>
+              <th style="padding:8px 12px;text-align:center;font-weight:600;border-bottom:1px solid var(--border-subtle);white-space:nowrap">图片</th>
+              <th style="padding:8px 12px;text-align:center;font-weight:600;border-bottom:1px solid var(--border-subtle);white-space:nowrap">Pro</th>
+              <th style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)"></th>
+            </tr>
+          </thead>
+          <tbody id="models-tbody"></tbody>
+        </table>
+      </div>
+      <div style="padding:12px 16px;border-top:1px solid var(--border-subtle);display:flex;gap:8px;justify-content:space-between;align-items:center">
+        <button class="btn btn-outline btn-sm" onclick="modelsAddRow()">+ 添加模型</button>
+        <button class="btn btn-primary" onclick="modelsSave()">保存模型列表</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="settings-section">
     <h2>当前配置</h2>
     <div class="settings-card" id="current-config" style="font-size:13px;color:var(--fg-muted);font-family:var(--font-mono);line-height:2"></div>
   </div>
@@ -1650,7 +1678,7 @@ window.switchView = function(v) {
   });
   if (v === 'home')     { loadHome(); }
   if (v === 'logs')     { loadLogs(0); }
-  if (v === 'settings') { loadStatus(); loadCurrentConfig(); }
+  if (v === 'settings') { loadStatus(); loadCurrentConfig(); loadModels(); }
   if (v === 'chat')     { loadChatModels(); }
   if (v === 'files')    { loadFiles(); }
   if (v !== 'generate') stopTaskPoll();
@@ -2851,6 +2879,93 @@ FlareSolverr: ${esc(d.flaresolverr_url || '未配置')}<br>
   } catch {}
 };
 
+// ── Model management ─────────────────────────────────────────────────────────
+
+window.loadModels = async function() {
+  try {
+    const d = await api('GET', '/admin/models');
+    renderModels(d.models || []);
+  } catch (e) { toast('加载模型列表失败', 'error'); }
+};
+
+function renderModels(models) {
+  const tbody = document.getElementById('models-tbody');
+  tbody.innerHTML = models.map((m, i) => modelRow(m, i)).join('');
+}
+
+function modelRow(m, i) {
+  const val = (v) => esc(v ?? '');
+  return `<tr data-idx="${i}" style="border-bottom:1px solid var(--border-subtle)">
+    <td style="padding:6px 12px"><input class="model-input" data-f="id" value="${val(m.id)}" style="width:100%;min-width:140px;font-family:var(--font-mono);font-size:12px;padding:4px 6px;border:1px solid var(--border-md);border-radius:4px;background:var(--bg)"></td>
+    <td style="padding:6px 12px"><input class="model-input" data-f="mode_id" value="${val(m.mode_id)}" style="width:100%;min-width:120px;font-family:var(--font-mono);font-size:12px;padding:4px 6px;border:1px solid var(--border-md);border-radius:4px;background:var(--bg)"></td>
+    <td style="padding:6px 12px"><input class="model-input" data-f="name" value="${val(m.name)}" style="width:100%;min-width:140px;font-size:12px;padding:4px 6px;border:1px solid var(--border-md);border-radius:4px;background:var(--bg)"></td>
+    <td style="padding:6px 12px;text-align:center"><input type="checkbox" class="model-input" data-f="image_model" ${m.image_model ? 'checked' : ''} style="width:15px;height:15px;cursor:pointer"></td>
+    <td style="padding:6px 12px;text-align:center"><input type="checkbox" class="model-input" data-f="enable_pro" ${m.enable_pro ? 'checked' : ''} style="width:15px;height:15px;cursor:pointer"></td>
+    <td style="padding:6px 12px;white-space:nowrap;display:flex;gap:6px;align-items:center">
+      <button class="btn btn-outline btn-sm" onclick="modelsVerify(this)" title="零消耗验证 modeId 是否在线">验证</button>
+      <span class="model-verify-badge" style="font-size:11px;white-space:nowrap"></span>
+      <button class="btn btn-outline btn-sm" style="color:#dc2626;border-color:#fca5a5" onclick="modelsDeleteRow(this)">删除</button>
+    </td>
+  </tr>`;
+}
+
+window.modelsAddRow = function() {
+  const tbody = document.getElementById('models-tbody');
+  const i = tbody.rows.length;
+  tbody.insertAdjacentHTML('beforeend', modelRow({id:'', mode_id:'', name:'', image_model:false, enable_pro:false}, i));
+};
+
+window.modelsDeleteRow = function(btn) {
+  btn.closest('tr').remove();
+};
+
+window.modelsVerify = async function(btn) {
+  const row = btn.closest('tr');
+  const modeIdEl = row.querySelector('[data-f="mode_id"]');
+  const badge = row.querySelector('.model-verify-badge');
+  const modeId = modeIdEl ? modeIdEl.value.trim() : '';
+  if (!modeId) { badge.textContent = '⚠ 无 Mode ID'; badge.style.color = '#f59e0b'; return; }
+  btn.disabled = true;
+  badge.textContent = '…';
+  badge.style.color = 'var(--fg-muted)';
+  try {
+    const d = await api('GET', `/admin/models/verify?mode_id=${encodeURIComponent(modeId)}`);
+    if (d.ok) {
+      const rem = d.remaining ?? '?';
+      const tot = d.total ?? '?';
+      const wait = d.wait_seconds ? ` 冷却${d.wait_seconds}s` : '';
+      badge.textContent = `✓ ${rem}/${tot}${wait}`;
+      badge.style.color = d.remaining === 0 ? '#f59e0b' : '#059669';
+    } else {
+      badge.textContent = `✗ ${d.error || '无效'}`;
+      badge.style.color = '#dc2626';
+    }
+  } catch (e) {
+    badge.textContent = `✗ ${e.message}`;
+    badge.style.color = '#dc2626';
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+window.modelsSave = async function() {
+  const tbody = document.getElementById('models-tbody');
+  const models = Array.from(tbody.querySelectorAll('tr')).map(row => {
+    const get = (f) => {
+      const el = row.querySelector(`[data-f="${f}"]`);
+      if (!el) return undefined;
+      return el.type === 'checkbox' ? el.checked : el.value.trim();
+    };
+    return { id: get('id'), mode_id: get('mode_id'), name: get('name'), image_model: get('image_model'), enable_pro: get('enable_pro') };
+  }).filter(m => m.id && m.mode_id);
+  if (!models.length) { toast('模型列表不能为空', 'error'); return; }
+  try {
+    await api('POST', '/admin/models', { models });
+    toast('模型列表已保存', 'success');
+    loadModels();
+  } catch (e) { toast('保存失败: ' + e.message, 'error'); }
+};
+
 window.importCurl = async function() {
   const text = document.getElementById('curl-text').value.trim();
   if (!text) { toast('请粘贴 cURL', 'error'); return; }
@@ -3227,8 +3342,6 @@ window.cleanupLogs = async function() {
 // ── Chat ────────────────────────────────────────────────────────
 const chatHistory = [];
 let chatStreaming = false;
-let _chatModelsLoaded = false;
-
 let _chatModel = '';
 
 window.toggleChatModelMenu = function(e) {
@@ -3246,7 +3359,6 @@ window.selectChatModel = function(id) {
 }
 
 async function loadChatModels() {
-  if (_chatModelsLoaded) return;
   try {
     const d = await api('GET', '/v1/models');
     const models = (d.data || []).filter(m => !m.image_model && !m.id.includes('imagine') && !m.id.includes('video'));
@@ -3255,8 +3367,7 @@ async function loadChatModels() {
     popup.innerHTML = models.map(m =>
       `<div class="chat-model-item" data-id="${esc(m.id)}" onclick="selectChatModel('${esc(m.id)}')">${esc(m.id)}</div>`
     ).join('');
-    selectChatModel(models[0].id);
-    _chatModelsLoaded = true;
+    if (!_chatModel) selectChatModel(models[0].id);
   } catch {}
 }
 
