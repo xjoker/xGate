@@ -2901,10 +2901,12 @@ function modelRow(m, i) {
     <td style="padding:6px 12px"><input class="model-input" data-f="name" value="${val(m.name)}" style="width:100%;min-width:140px;font-size:12px;padding:4px 6px;border:1px solid var(--border-md);border-radius:4px;background:var(--bg)"></td>
     <td style="padding:6px 12px;text-align:center"><input type="checkbox" class="model-input" data-f="image_model" ${m.image_model ? 'checked' : ''} style="width:15px;height:15px;cursor:pointer"></td>
     <td style="padding:6px 12px;text-align:center"><input type="checkbox" class="model-input" data-f="enable_pro" ${m.enable_pro ? 'checked' : ''} style="width:15px;height:15px;cursor:pointer"></td>
-    <td style="padding:6px 12px;white-space:nowrap;display:flex;gap:6px;align-items:center">
-      <button class="btn btn-outline btn-sm" onclick="modelsVerify(this)" title="零消耗验证 modeId 是否在线">验证</button>
-      <span class="model-verify-badge" style="font-size:11px;white-space:nowrap"></span>
-      <button class="btn btn-outline btn-sm" style="color:#dc2626;border-color:#fca5a5" onclick="modelsDeleteRow(this)">删除</button>
+    <td style="padding:6px 12px;white-space:nowrap">
+      <div style="display:flex;gap:6px;align-items:center">
+        <button class="btn btn-outline btn-sm" onclick="modelsVerify(this)" title="零消耗验证 modeId 是否在线">验证</button>
+        <span class="model-verify-badge" style="font-size:11px;white-space:nowrap"></span>
+        <button class="btn btn-outline btn-sm" style="color:#dc2626;border-color:#fca5a5" onclick="modelsDeleteRow(this)">删除</button>
+      </div>
     </td>
   </tr>`;
 }

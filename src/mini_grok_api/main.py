@@ -186,7 +186,7 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
 
 app = FastAPI(
     title="xGate API",
-    version="0.1.3",
+    version="0.1.4",
     lifespan=_lifespan,
     description=(
         "**xAI Grok → OpenAI-compatible API 网关**\n\n"
@@ -2434,7 +2434,7 @@ async def admin_models_verify(
     if not mode_id.strip():
         raise HTTPException(status_code=400, detail="mode_id 不能为空")
     try:
-        raw = await query_rate_limits(settings, mode_id.strip())
+        raw = await query_rate_limits(settings, model_name=mode_id.strip())
         remaining = raw.get("remainingQueries")
         total = raw.get("totalQueries")
         wait = raw.get("waitTimeSeconds")
