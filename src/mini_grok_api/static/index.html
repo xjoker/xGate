@@ -1288,8 +1288,8 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
 <!-- ═══════════════════ SETTINGS VIEW ═══════════════════ -->
 <div id="view-settings" class="view">
 
-  <!-- 全宽：运行状态（置顶） -->
-  <div class="settings-section full-width">
+  <!-- 左列：运行状态 -->
+  <div class="settings-section">
     <h2>运行状态</h2>
     <div class="status-grid" id="status-grid">
       <div class="status-card"><div class="status-card-label">总请求</div><div class="status-card-value" id="s-total">—</div></div>
@@ -1297,6 +1297,12 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
       <div class="status-card"><div class="status-card-label">失败</div><div class="status-card-value" id="s-fail">—</div></div>
       <div class="status-card"><div class="status-card-label">CF 拦截</div><div class="status-card-value" id="s-cf">—</div></div>
     </div>
+  </div>
+
+  <!-- 右列：当前配置 -->
+  <div class="settings-section">
+    <h2>当前配置</h2>
+    <div class="settings-card" id="current-config" style="font-size:13px;color:var(--fg-muted);font-family:var(--font-mono);line-height:2"></div>
   </div>
 
   <!-- 左列：导入 cURL -->
@@ -1331,12 +1337,6 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
       </div>
       <div style="margin-top:14px"><button class="btn btn-primary" onclick="saveConfig()">保存配置</button></div>
     </div>
-  </div>
-
-  <!-- 全宽：当前配置 -->
-  <div class="settings-section full-width">
-    <h2>当前配置</h2>
-    <div class="settings-card" id="current-config" style="font-size:13px;color:var(--fg-muted);font-family:var(--font-mono);line-height:2"></div>
   </div>
 
   <!-- 全宽：模型管理 -->
@@ -3290,7 +3290,7 @@ function drawSparkline(canvasId, data, color) {
 }
 
 // ── Logs ──────────────────────────────────────────────────────
-const logState = { offset: 0, limit: 50, total: 0, type: 'all' };
+window.logState = { offset: 0, limit: 50, total: 0, type: 'all' };
 let logDebounceTimer = null;
 
 window.setLogType = function(lt) {
