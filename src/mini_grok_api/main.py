@@ -50,6 +50,7 @@ from .grok_client import (
     stream_grok_asset,
     chat_imagine,
     query_rate_limits,
+    query_image_rate_limits,
 )
 from .image_stream import ImageStreamWorker, StreamConfig
 from .models import get_model, get_model_specs, list_models, model_to_openai, set_models, ModelSpec
@@ -186,7 +187,7 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
 
 app = FastAPI(
     title="xGate API",
-    version="0.1.4",
+    version="0.1.5",
     lifespan=_lifespan,
     description=(
         "**xAI Grok → OpenAI-compatible API 网关**\n\n"
@@ -1422,9 +1423,10 @@ async def images_generations(
     req: ImageGenerationRequest,
     settings: Annotated[Settings, Depends(_settings)],
 ) -> JSONResponse:
-    spec = get_model(req.model)
+    model_id = req.model or settings.default_image_model
+    spec = get_model(model_id)
     if spec is None or not spec.image_model:
-        return _error_response(f"Model {req.model!r} not found or not an image model", 404, code="model_not_found")
+        return _error_response(f"Model {model_id!r} not found or not an image model", 404, code="model_not_found")
     if not req.prompt.strip():
         return _error_response("prompt cannot be empty", 400, code="invalid_prompt")
     if req.response_format and req.response_format != "url":
@@ -1438,7 +1440,7 @@ async def images_generations(
     prompt = req.prompt.strip()
     aspect_ratio = resolve_aspect_ratio(req.size)
     logger.info("image: model=%s prompt=%r aspect=%s n=%d",
-                req.model, prompt[:80], aspect_ratio, req.n)
+                model_id, prompt[:80], aspect_ratio, req.n)
     session_id = str(__import__("uuid").uuid4())
     session_dir = _init_session(session_id, prompt=prompt, source="api", aspect_ratio=aspect_ratio)
     t0 = time.monotonic()
@@ -1454,7 +1456,7 @@ async def images_generations(
         code = exc.code or "upstream_error"
         monitor.record_failure(exc.status_code, str(exc), cloudflare=code == "cloudflare_challenge")
         log_db.log_image(
-            request_id=session_id, model=req.model, prompt=prompt,
+            request_id=session_id, model=model_id, prompt=prompt,
             aspect_ratio=aspect_ratio, source="api",
             status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
         )
@@ -1463,7 +1465,7 @@ async def images_generations(
         logger.exception("image generation failed")
         monitor.record_failure(500, str(exc))
         log_db.log_image(
-            request_id=session_id, model=req.model, prompt=prompt,
+            request_id=session_id, model=model_id, prompt=prompt,
             aspect_ratio=aspect_ratio, source="api",
             status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
         )
@@ -1471,7 +1473,7 @@ async def images_generations(
 
     monitor.record_success()
     log_db.log_image(
-        request_id=session_id, model=req.model, prompt=prompt,
+        request_id=session_id, model=model_id, prompt=prompt,
         image_paths=[img.serve_path for img in images],
         image_count=len(images),
         aspect_ratio=aspect_ratio, source="api",
@@ -1663,17 +1665,21 @@ def _not_implemented(endpoint: str) -> JSONResponse:
               "**返回**：`session_id` 用于轮询图库；用 `GET /v1/images/stream/status` 查看进度。"
           ),
           dependencies=[Depends(_require_api_key)])
-async def stream_start(req: ImageStreamStartRequest) -> JSONResponse:
-    spec = get_model(req.model)
+async def stream_start(
+    req: ImageStreamStartRequest,
+    settings: Annotated[Settings, Depends(_settings)],
+) -> JSONResponse:
+    model_id = req.model or settings.default_image_model
+    spec = get_model(model_id)
     if spec is None or not spec.image_model:
-        return _error_response(f"Model {req.model!r} not found or not an image model", 404, code="model_not_found")
+        return _error_response(f"Model {model_id!r} not found or not an image model", 404, code="model_not_found")
     if not req.prompt.strip():
         return _error_response("prompt cannot be empty", 400, code="invalid_prompt")
     if image_stream_worker.is_running():
         return JSONResponse({"ok": False, "message": "worker already running"}, status_code=409)
     cfg = StreamConfig(
         prompt=req.prompt.strip(),
-        model=req.model,
+        model=model_id,
         n=req.n,
         size=req.size,
         interval_seconds=req.interval_seconds,
@@ -1733,9 +1739,10 @@ async def task_add(
     req: TaskQueueAddRequest,
     settings: Annotated[Settings, Depends(_settings)],
 ) -> JSONResponse:
-    spec = get_model(req.model)
+    model_id = req.model or settings.default_image_model
+    spec = get_model(model_id)
     if spec is None or not spec.image_model:
-        return _error_response(f"Model {req.model!r} not found or not an image model", 404, code="model_not_found")
+        return _error_response(f"Model {model_id!r} not found or not an image model", 404, code="model_not_found")
     if not req.prompt.strip():
         return _error_response("prompt cannot be empty", 400, code="invalid_prompt")
     task = await task_queue.add_task(
@@ -2166,6 +2173,21 @@ async def chat_quota(settings: Annotated[Settings, Depends(_settings)]) -> JSONR
     return JSONResponse({"chat_quotas": list(out)})
 
 
+@app.get("/v1/quota/image", tags=[_TAG_QUOTA], summary="探测图片生成额度",
+         description=(
+             "依次用多个候选 modelName 查询 `/rest/rate-limits`，找出 grok.com 图片额度的实际接口。\n\n"
+             "返回 `candidates` 列表，每项含 `model_name`、`remaining`、`total`、`used_pct`（成功时），"
+             "或 `error`、`status_code`（失败时）。`status_code=404` 表示该 modelName 无效。\n\n"
+             "找到有效 modelName 后可在配置中记录供后续复用。"
+         ),
+         dependencies=[Depends(_require_api_key)])
+async def image_quota(settings: Annotated[Settings, Depends(_settings)]) -> JSONResponse:
+    result = await query_image_rate_limits(settings)
+    valid = [c for c in result["candidates"] if "remaining" in c]
+    result["best"] = valid[0] if valid else None
+    return JSONResponse(result)
+
+
 class _ChatImagineRequest(BaseModel):
     prompt: str
     image_count: int = 2
@@ -2342,7 +2364,7 @@ async def import_curl(curl_text: Annotated[str, Form()]) -> JSONResponse:
 @app.post("/admin/config", tags=[_TAG_ADMIN], summary="更新运行配置",
           description=(
               "逐字段更新配置（留空字段不修改）。`Content-Type: application/x-www-form-urlencoded`。\n\n"
-              "**可更新字段**：`api_key`、`grok_cookie`、`grok_user_agent`、`grok_browser`（curl_cffi 指纹）、`grok_proxy`、`log_retention_days`。"
+              "**可更新字段**：`api_key`、`grok_cookie`、`grok_user_agent`、`grok_browser`（curl_cffi 指纹）、`grok_proxy`、`log_retention_days`、`default_image_model`。"
           ),
           dependencies=[Depends(_require_api_key)])
 async def update_config(
@@ -2353,6 +2375,7 @@ async def update_config(
     grok_proxy: Annotated[str, Form()] = "",
     flaresolverr_url: Annotated[str, Form()] = "",
     log_retention_days: Annotated[str, Form()] = "",
+    default_image_model: Annotated[str, Form()] = "",
 ) -> JSONResponse:
     patch: dict[str, object] = {}
     new_api_key: str | None = None
@@ -2373,6 +2396,8 @@ async def update_config(
             patch["log_retention_days"] = int(log_retention_days.strip())
         except ValueError:
             pass
+    if default_image_model.strip():
+        patch["default_image_model"] = default_image_model.strip()
     if patch:
         old_api_key = settings_store.get().api_key
         settings_store.update(**patch)
@@ -2505,6 +2530,7 @@ async def admin_status(settings: Annotated[Settings, Depends(_settings)]) -> dic
         "proxy_configured": bool(settings.grok_proxy),
         "flaresolverr_url": settings.flaresolverr_url or "",
         "log_retention_days": settings.log_retention_days,
+        "default_image_model": settings.default_image_model,
     }
 
 
@@ -2538,9 +2564,13 @@ async def admin_dashboard(settings: Annotated[Settings, Depends(_settings)]) -> 
         key=lambda t: t.get("priority", 999),
     )[:8]
     snap = monitor.snapshot()
+    img_quota_result = await query_image_rate_limits(settings)
+    img_quota_valid = [c for c in img_quota_result["candidates"] if "remaining" in c]
+    image_quota = img_quota_valid[0] if img_quota_valid else None
     return JSONResponse({
         "version": app.version,
         "model_quotas": model_quotas,
+        "image_quota": image_quota,
         "tasks": {**task_stats, "total_moderated": total_moderated},
         "recent_tasks": recent_tasks,
         "logs": log_stats,

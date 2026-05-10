@@ -50,6 +50,7 @@ class Settings:
     files_auto_sync_interval_seconds: int
     mcp_enabled: bool
     mcp_default_model: str
+    default_image_model: str
     public_base_url: str
     chat_models: tuple  # list of dicts: {id, mode_id, name, image_model, enable_pro}
 
@@ -107,6 +108,7 @@ def load_settings() -> Settings:
         files_auto_sync_interval_seconds=_int(data, "files.auto_sync_interval_seconds", 300),
         mcp_enabled=bool(_get_nested(data, "mcp.enabled", True)),
         mcp_default_model=_str(data, "mcp.default_model", "grok-4.20-auto"),
+        default_image_model=_str(data, "models.default_image_model", "grok-imagine-image-lite"),
         public_base_url=_str(data, "server.public_base_url", ""),
         chat_models=tuple(_get_nested(data, "models.chat", None) or DEFAULT_CHAT_MODELS),
     )
@@ -147,7 +149,10 @@ def save_settings(settings: Settings, path: Path = CONFIG_PATH) -> None:
             "",
         ]
     )
-    # 追加 [[models.chat]] 数组（TOML array of tables 必须在文件末尾）
+    # models 基础配置 + [[models.chat]] 数组（array of tables 必须在文件末尾）
+    content += "[models]\n"
+    content += f"default_image_model = {json.dumps(settings.default_image_model, ensure_ascii=False)}\n"
+    content += "\n"
     for m in settings.chat_models:
         if not isinstance(m, dict) or not m.get("id"):
             continue

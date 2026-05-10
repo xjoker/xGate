@@ -57,6 +57,7 @@ class GrokClientError(RuntimeError):
         self.status_code = status_code
         self.body = body
         self.code = code
+        self.wait_time_seconds: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -842,6 +843,34 @@ async def query_rate_limits(settings: Settings, *, model_name: str) -> dict[str,
             raise GrokClientError(f"rate-limits parse failed: {exc}", status_code=502) from exc
 
 
+# 已知可能有效的图片 rate-limit model 候选名
+_IMAGE_RATE_LIMIT_CANDIDATES = ["aurora", "grok-2-aurora", "imagine", "grok-image"]
+
+
+async def query_image_rate_limits(settings: Settings) -> dict[str, Any]:
+    """探测图片生成额度。依次尝试多个候选 modelName，返回第一个成功的结果。
+    每个候选结果包含 model_name、raw（原始 JSON）、error（若失败）。
+    """
+    results: list[dict] = []
+    for name in _IMAGE_RATE_LIMIT_CANDIDATES:
+        try:
+            raw = await query_rate_limits(settings, model_name=name)
+            entry: dict[str, Any] = {"model_name": name, "raw": raw}
+            if raw.get("remainingQueries") is not None:
+                entry["remaining"] = int(raw["remainingQueries"])
+                entry["total"] = int(raw.get("totalQueries") or raw["remainingQueries"])
+                used = entry["total"] - entry["remaining"]
+                entry["used_pct"] = round(used / entry["total"] * 100, 1) if entry["total"] > 0 else 0.0
+                if raw.get("waitTimeSeconds") is not None:
+                    entry["wait_time_seconds"] = int(raw["waitTimeSeconds"])
+            results.append(entry)
+        except GrokClientError as exc:
+            results.append({"model_name": name, "error": str(exc), "status_code": exc.status_code})
+        except Exception as exc:
+            results.append({"model_name": name, "error": str(exc)})
+    return {"candidates": results}
+
+
 async def complete_chat(settings: Settings, *, message: str, mode_id: str) -> str:
     chunks: list[str] = []
     async for delta in stream_chat(settings, message=message, mode_id=mode_id):
@@ -1102,6 +1131,16 @@ async def _collect_batch(
             continue
 
         if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+            close_code = msg.data if isinstance(msg.data, int) else None
+            close_reason = (msg.extra or "").strip() if hasattr(msg, "extra") else ""
+            logger.info("imagine WS closed: code=%s reason=%r", close_code, close_reason)
+            reason_lower = close_reason.lower()
+            if "rate limit" in reason_lower or "too many" in reason_lower or close_code in (1008, 1013):
+                exc = GrokClientError(
+                    f"Imagine upstream error: {close_reason or 'Image rate limit exceeded'}",
+                    status_code=429, code="image_rate_limited",
+                )
+                raise exc
             return BatchOutcome(results, True, len(slots), moderated_count, r_rated_count)
 
         if msg.type != aiohttp.WSMsgType.TEXT:
@@ -1163,7 +1202,16 @@ async def _collect_batch(
 
         elif frame_type == "error":
             err = data.get("err_msg") or str(data)
-            raise GrokClientError(f"Imagine upstream error: {err}", status_code=502)
+            logger.error("imagine WS error frame full data: %s", data)
+            wait = data.get("waitTimeSeconds") or data.get("wait_time_seconds")
+            exc = GrokClientError(
+                f"Imagine upstream error: {err}",
+                status_code=429 if "rate limit" in err.lower() else 502,
+                code="image_rate_limited" if "rate limit" in err.lower() else None,
+            )
+            if wait is not None:
+                exc.wait_time_seconds = int(wait)
+            raise exc
 
     return BatchOutcome(results, False, len(slots), moderated_count, r_rated_count)
 

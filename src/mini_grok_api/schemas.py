@@ -59,7 +59,7 @@ class ChatCompletionRequest(_OpenAIBase):
 
 
 class ImageGenerationRequest(_OpenAIBase):
-    model: str = "grok-imagine"
+    model: str | None = None
     prompt: str
     n: int = Field(default=1, ge=1, le=4)
     size: str = "1024x1024"
@@ -71,7 +71,7 @@ class ImageGenerationRequest(_OpenAIBase):
 
 class ImageStreamStartRequest(BaseModel):
     prompt: str
-    model: str = "grok-imagine"
+    model: str | None = None
     n: int = Field(default=1, ge=1, le=4)
     size: str = "1024x1024"
     interval_seconds: float = Field(default=5.0, ge=1.0, le=3600.0)
@@ -85,7 +85,7 @@ class TaskQueueAddRequest(BaseModel):
     target_count: int = Field(default=10, ge=1, le=1000)
     size: str = "1024x1024"
     origin: str = Field(default="queue")  # queue / chat / api，仅用于前端区分展示
-    model: str = "grok-imagine"
+    model: str | None = None
     interval_seconds: float = Field(default=5.0, ge=1.0, le=3600.0)
 
 

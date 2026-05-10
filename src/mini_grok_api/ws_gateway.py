@@ -218,7 +218,9 @@ class WsGateway:
         proxy = settings.grok_proxy or None
         batch_count = 0
         consecutive_errors = 0
+        consecutive_empty_closes = 0  # 连续「建连即断、0 帧」次数，用于检测 rate limit
         _MAX_CONSECUTIVE_ERRORS = 5
+        _MAX_EMPTY_CLOSES = 3  # 连续 3 次空断 → 判定为图片额度受限
 
         while not job.stop_event.is_set():
             if job.max_batches >= 0 and batch_count >= job.max_batches:
@@ -284,6 +286,20 @@ class WsGateway:
                                 )
 
                             if ws_closed:
+                                if not results and outcome.total_slots == 0:
+                                    consecutive_empty_closes += 1
+                                    logger.warning(
+                                        "WsGateway WS closed with 0 frames (%d/%d), may be rate limited",
+                                        consecutive_empty_closes, _MAX_EMPTY_CLOSES,
+                                    )
+                                    if consecutive_empty_closes >= _MAX_EMPTY_CLOSES:
+                                        raise GrokClientError(
+                                            "Imagine upstream error: Image rate limit exceeded"
+                                            f" (WS closed {consecutive_empty_closes}× with no frames)",
+                                            status_code=429, code="image_rate_limited",
+                                        )
+                                else:
+                                    consecutive_empty_closes = 0
                                 logger.info("WsGateway WS closed by server, reconnecting")
                                 break  # 外层 while 重连
 

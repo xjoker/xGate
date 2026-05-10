@@ -2011,7 +2011,7 @@ window.startStream = async function startStream() {
     _runChatImagine(prompt, Math.max(maxImg, 1));
     return;
   }
-  const model = S.quality === 'quality' ? 'grok-imagine-pro' : 'grok-imagine';
+  const model = _getImageModel(S.quality === 'quality');
   const size = SIZE_MAP[S.ratio] || '1024x1792';
   const interval = parseFloat(document.getElementById('gen-interval').value) || 6;
   const maxImg = parseInt(document.getElementById('gen-maximg').value) || 0;
@@ -2569,7 +2569,7 @@ function initLightbox() {
 window.sendToQueue = async function() {
   const prompt = document.getElementById('gen-prompt').value.trim();
   if (!prompt) { toast('请输入提示词', 'error'); return; }
-  const model = S.quality === 'quality' ? 'grok-imagine-pro' : 'grok-imagine';
+  const model = _getImageModel(S.quality === 'quality');
   const size = SIZE_MAP[S.ratio] || '1024x1792';
   const interval = parseFloat(document.getElementById('gen-interval').value) || 6;
   const maxImg = parseInt(document.getElementById('gen-maximg').value) || 0;
@@ -2708,7 +2708,7 @@ window.loadTasks = async function() {
       const typeBadge = isVideo
         ? '<span style="font-size:10px;background:#ede9fe;color:#6d28d9;padding:1px 5px;border-radius:3px;margin-left:4px" title="视频任务">🎬 视频</span>'
         : '<span style="font-size:10px;background:#dcfce7;color:#15803d;padding:1px 5px;border-radius:3px;margin-left:4px" title="图片任务">🖼 图片</span>';
-      const modelName = t.model || (isVideo ? 'grok-video' : (t.enable_pro ? 'grok-imagine-pro' : 'grok-imagine'));
+      const modelName = t.model || (isVideo ? 'grok-video' : _getImageModel(t.enable_pro));
       const modelBadge = `<span style="font-size:10px;font-family:monospace;background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;padding:1px 5px;border-radius:3px;margin-left:4px" title="模型">${esc(modelName)}</span>`;
       const badges = [];
       if (modCount > 0) badges.push(`<span style="font-size:11px;color:#b91c1c;margin-left:8px" title="被 Grok 内容审核拦截">⚠ ${modCount} 审</span>`);
@@ -2866,6 +2866,14 @@ function stopTaskPoll()  { clearInterval(taskPollTimer); }
 // ── Settings ───────────────────────────────────────────────────
 // ── Settings cache（先显示缓存再后台刷新，避免切换时空闪）──────────────────
 const _sCache = { status: null, models: null };
+
+// 从缓存的模型列表中找图片模型；找不到时兜底到已知 ID
+function _getImageModel(enablePro) {
+  const imgs = (_sCache.models || []).filter(m => m.image_model);
+  const match = imgs.find(m => !!m.enable_pro === !!enablePro);
+  if (match) return match.id;
+  return enablePro ? 'grok-imagine-image' : 'grok-imagine-image-lite';
+}
 
 function _renderStatus(d) {
   document.getElementById('s-total').textContent = d.total_requests ?? '—';
@@ -3130,7 +3138,20 @@ window.showQuotaDetails = function() {
   const s = window._quotaSnapshot;
   if (!s) { refreshQuota(); return; }
   const rows = [];
-  rows.push(`<div class="modal-section-title">Imagine 额度（图片/视频）</div>`);
+  // 图片额度
+  rows.push(`<div class="modal-section-title">图片生成额度</div>`);
+  if (s.image_quota) {
+    const q = s.image_quota;
+    const cls = q.used_pct >= 90 ? 'error' : q.used_pct >= 70 ? 'running' : 'success';
+    rows.push(_row(q.model_name, `${q.remaining}/${q.total} 剩余（${q.used_pct}%）`, cls));
+    if (q.wait_time_seconds) {
+      const mins = Math.ceil(q.wait_time_seconds / 60);
+      rows.push(_row('重置倒计时', `约 ${mins} 分钟`, 'error'));
+    }
+  } else {
+    rows.push(`<div class="modal-row"><span class="k">暂无数据（额度接口未找到有效 modelName）</span><span class="v"></span></div>`);
+  }
+  // 旧式 quotas（如果有）
   for (const [mode, q] of Object.entries(s.quotas || {})) {
     if (!q) continue;
     const cls = q.used_pct >= 90 ? 'error' : q.used_pct >= 70 ? 'running' : 'success';
@@ -3176,10 +3197,33 @@ window.loadHome = async function() {
     if (qGrid) {
       const mqs = d.model_quotas || [];
       const PALETTE = ['#059669','#3b82f6','#7c3aed','#f59e0b','#ec4899','#06b6d4','#84cc16','#f97316'];
-      if (!mqs.length) {
+      // 图片额度卡片（放在最前）
+      const iq = d.image_quota;
+      const imgCard = iq ? (() => {
+        const pct = iq.used_pct ?? 0;
+        const barColor = pct >= 90 ? '#dc2626' : pct >= 70 ? '#d97706' : '#ec4899';
+        const waitTip = iq.wait_time_seconds ? `<div style="font-size:11px;color:#dc2626;margin-top:2px">受限，约 ${Math.ceil(iq.wait_time_seconds/60)} 分钟后重置</div>` : '';
+        return `<div class="settings-card" style="padding:14px 16px;border:1px solid ${pct>=90?'#fca5a5':'transparent'}">
+          <div style="font-size:11px;font-weight:600;color:#6b7280;margin-bottom:8px">图片生成额度 <span style="font-size:10px;font-family:monospace">(${esc(iq.model_name)})</span></div>
+          <div style="display:flex;align-items:baseline;gap:4px;margin-bottom:4px">
+            <span style="font-size:24px;font-weight:700;color:${barColor}">${iq.remaining ?? '—'}</span>
+            <span style="font-size:12px;color:#9ca3af">/ ${iq.total ?? '—'}</span>
+          </div>
+          <div style="height:4px;border-radius:2px;background:#e5e7eb;overflow:hidden;margin-bottom:6px">
+            <div style="height:100%;width:${Math.min(pct,100)}%;background:${barColor};transition:width .3s"></div>
+          </div>
+          <div style="font-size:11px;color:#6b7280">${pct}% 已用</div>
+          ${waitTip}
+        </div>`;
+      })() : '';
+      // 更新 _quotaSnapshot 中的图片额度
+      if (window._quotaSnapshot) window._quotaSnapshot.image_quota = iq || null;
+      else window._quotaSnapshot = { quotas: {}, chat: [], image_quota: iq || null };
+
+      if (!mqs.length && !iq) {
         qGrid.innerHTML = '<div class="settings-card" style="padding:14px 16px;color:var(--fg-muted);font-size:13px">暂无配额数据（Cookie 未配置？）</div>';
       } else {
-        qGrid.innerHTML = mqs.map((q, i) => {
+        qGrid.innerHTML = imgCard + mqs.map((q, i) => {
           const color = PALETTE[i % PALETTE.length];
           if (q.error) return `<div class="settings-card" style="padding:14px 16px">
             <div style="font-size:11px;font-weight:600;color:#6b7280;margin-bottom:8px">${esc(q.name)}</div>
@@ -3559,7 +3603,7 @@ async function _renderGrokImages(bubble) {
     el.removeAttribute('data-prompt'); // prevent double-trigger
     try {
       const d = await api('POST', '/v1/images/generations', {
-        model: 'grok-imagine', prompt, n: 1, size: '1024x1024',
+        model: _getImageModel(false), prompt, n: 1, size: '1024x1024',
       });
       const url = d.data?.[0]?.url;
       if (url) {
@@ -4767,6 +4811,8 @@ function initApp() {
   initLightbox();
   switchView('home');
   refreshQuota();
+  // 提前拉模型列表供生图时动态选 model id（避免写死）
+  api('GET', '/admin/models').then(d => { _sCache.models = d.models || []; }).catch(() => {});
   // textarea 自适应高度（min/max 由 CSS 限定）
   document.querySelectorAll('#gen-prompt, #q-prompt, #chat-input').forEach(_attachAutosize);
   // 幻灯片偏好恢复

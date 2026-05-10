@@ -452,7 +452,7 @@ class TaskQueue:
                     task.id[:8], len(batch), task.generated_count, task.target_count,
                 )
                 if self._log_db:
-                    model = "grok-imagine-pro" if task.enable_pro else "grok-imagine"
+                    model = "grok-imagine-image" if task.enable_pro else "grok-imagine-image-lite"
                     self._log_db.log_image(
                         request_id=task.session_id,
                         model=model,
@@ -513,7 +513,7 @@ class TaskQueue:
                         task.finished_at = time.time()
             self._save_task(task)
             if self._log_db:
-                model = "grok-imagine-pro" if task.enable_pro else "grok-imagine"
+                model = "grok-imagine-image" if task.enable_pro else "grok-imagine-image-lite"
                 self._log_db.log_image(
                     request_id=task.session_id, model=model, prompt=task.prompt,
                     image_count=0, aspect_ratio=task.aspect_ratio, source="queue",
@@ -532,7 +532,7 @@ class TaskQueue:
                     task.finished_at = time.time()
             self._save_task(task)
             if self._log_db:
-                model = "grok-imagine-pro" if task.enable_pro else "grok-imagine"
+                model = "grok-imagine-image" if task.enable_pro else "grok-imagine-image-lite"
                 self._log_db.log_image(
                     request_id=task.session_id, model=model, prompt=task.prompt,
                     image_count=0, aspect_ratio=task.aspect_ratio, source="queue",
