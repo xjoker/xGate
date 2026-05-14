@@ -52,6 +52,7 @@ class Settings:
     mcp_default_model: str
     default_image_model: str
     public_base_url: str
+    cookie_secure: str  # "auto" | "always" | "never"
     chat_models: tuple  # list of dicts: {id, mode_id, name, image_model, enable_pro}
 
 
@@ -110,6 +111,7 @@ def load_settings() -> Settings:
         mcp_default_model=_str(data, "mcp.default_model", "grok-4.20-auto"),
         default_image_model=_str(data, "models.default_image_model", "grok-imagine-image-lite"),
         public_base_url=_str(data, "server.public_base_url", ""),
+        cookie_secure=_str(data, "server.cookie_secure", "auto"),
         chat_models=tuple(_get_nested(data, "models.chat", None) or DEFAULT_CHAT_MODELS),
     )
 
@@ -122,6 +124,8 @@ def save_settings(settings: Settings, path: Path = CONFIG_PATH) -> None:
             f"host = {json.dumps(settings.server_host, ensure_ascii=False)}",
             f"port = {settings.server_port}",
             f"public_base_url = {json.dumps(settings.public_base_url, ensure_ascii=False)}",
+            f"# cookie_secure: auto=跟随 public_base_url 协议, always=强制 Secure, never=不设 Secure（仅限本地开发）",
+            f"cookie_secure = {json.dumps(settings.cookie_secure, ensure_ascii=False)}",
             "",
             "[auth]",
             f"api_key = {json.dumps(settings.api_key, ensure_ascii=False)}",
