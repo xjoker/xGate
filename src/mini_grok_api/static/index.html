@@ -1719,7 +1719,7 @@ function toast(msg, type = '') {
 }
 
 // ── Helpers ────────────────────────────────────────────────────
-function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 
 // 视频 tile：缩略图（autoplay+muted+loop，无原生 controls）+ 点击整块打开模态框
 // 整个 tile 可点（不会被原生 controls 拦截，因为没启用 controls）
@@ -3851,9 +3851,9 @@ function _parseMd(text) {
         // 不安全 URL → 占位文本，避免静默渲染
         imgs.push(`<span class="img-blocked" title="blocked unsafe image URL">[image]</span>`);
       } else {
-        // safeSrc 已校验过协议；HTML attribute 上下文中无需进一步转义（无 " 字符可破坏属性）
-        // onclick 用 JSON.stringify 防 ' 注入
-        imgs.push(`<img src="${safeSrc}" alt="${esc(alt)}" onclick="window.open(${JSON.stringify(safeSrc)},'_blank')">`);
+        // 协议白名单后再用 esc() 处理属性上下文中的 " ' 等元字符，防止 URL 含特殊字符破坏属性边界
+        const escSrc = esc(safeSrc);
+        imgs.push(`<img src="${escSrc}" alt="${esc(alt)}" onclick="window.open(${JSON.stringify(safeSrc)},'_blank')">`);
       }
       return ph;
     });
