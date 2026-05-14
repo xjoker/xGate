@@ -1169,10 +1169,54 @@ async def serve_video(
     dependencies=[Depends(_require_api_key)],
 )
 async def proxy_grok_asset(
+    request: Request,
     settings: Annotated[Settings, Depends(_settings)],
     url: str = "",
+    xgate_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE)] = None,
 ) -> StreamingResponse:
     from urllib.parse import urlparse, unquote
+
+    # CSRF 防护：cookie 通道必须有 same-origin Referer 或 Origin
+    # API 客户端（Bearer / X-Api-Key）无 session cookie，直接放行
+    if xgate_session is not None:
+        referer = request.headers.get("referer", "")
+        origin = request.headers.get("origin", "")
+        # 允许的 host 集合：本服务实际 host + public_base_url 配置的 host
+        allowed_hosts: set[str] = set()
+        if request.url.hostname:
+            allowed_hosts.add(request.url.hostname)
+        pub = (settings.public_base_url or "").strip()
+        if pub:
+            try:
+                _pub_host = urlparse(pub).hostname
+                if _pub_host:
+                    allowed_hosts.add(_pub_host)
+            except Exception:
+                pass
+
+        def _host_allowed(header_val: str) -> bool:
+            if not header_val:
+                return False
+            try:
+                return (urlparse(header_val).hostname or "") in allowed_hosts
+            except Exception:
+                return False
+
+        if not (_host_allowed(referer) or _host_allowed(origin)):
+            return JSONResponse(
+                {
+                    "error": {
+                        "message": (
+                            "This endpoint is GET-only by design (for <img src>) and requires "
+                            "same-origin Referer when called via session cookie."
+                        ),
+                        "type": "permission_error",
+                        "code": "cross_origin_blocked",
+                    }
+                },
+                status_code=403,
+            )
+
     if not url:
         return JSONResponse({"error": "url is required"}, status_code=400)
     try:
