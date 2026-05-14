@@ -16,7 +16,7 @@ import random
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncGenerator, Callable
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Callable
 
 import aiohttp
 from aiohttp_socks import ProxyConnector
@@ -31,6 +31,9 @@ from .grok_client import (
     _ws_connect,
     _ws_headers,
 )
+
+if TYPE_CHECKING:
+    from .accounts import AccountPool
 
 logger = logging.getLogger(__name__)
 
@@ -61,14 +64,16 @@ class WsGateway:
         self._queue: asyncio.Queue[_WsJob | None] = asyncio.Queue()
         self._worker_task: asyncio.Task | None = None
         self._settings_getter: Any = None
+        self._account_pool: "AccountPool | None" = None
         self._current_job: _WsJob | None = None
 
     # ------------------------------------------------------------------
     # 生命周期
     # ------------------------------------------------------------------
 
-    def start(self, settings_getter: Any) -> None:
+    def start(self, settings_getter: Any, account_pool: "AccountPool | None" = None) -> None:
         self._settings_getter = settings_getter
+        self._account_pool = account_pool
         if self._worker_task is None or self._worker_task.done():
             self._worker_task = asyncio.create_task(
                 self._worker_loop(), name="ws-gateway"
@@ -213,7 +218,38 @@ class WsGateway:
 
     async def _run_job(self, job: _WsJob) -> None:
         """执行单个 job，含断线重连逻辑。"""
-        settings: Settings = self._settings_getter()
+        # 优先使用 account_pool（Phase 1 多账号），降级到 settings_getter（兼容无池场景）
+        if self._account_pool is not None:
+            _acq_ctx = self._account_pool.acquire(model_id="grok-imagine")
+            _acq = _acq_ctx.__enter__()
+            settings: Settings = _acq.settings
+        else:
+            _acq_ctx = None
+            _acq = None
+            settings = self._settings_getter()
+        _job_error: BaseException | None = None
+        try:
+            await self._run_job_inner(job, settings)
+        except GrokClientError as exc:
+            _job_error = exc
+            if _acq is not None:
+                _acq.mark_failure(exc.code or "upstream_5xx")
+            raise
+        except Exception as exc:
+            _job_error = exc
+            if _acq is not None:
+                _acq.mark_failure("upstream_5xx")
+            raise
+        finally:
+            if _acq_ctx is not None:
+                _acq_ctx.__exit__(
+                    type(_job_error) if _job_error else None,
+                    _job_error,
+                    _job_error.__traceback__ if _job_error else None,
+                )
+
+    async def _run_job_inner(self, job: _WsJob, settings: Settings) -> None:
+        """_run_job 的实际实现（已解耦 account_pool）。"""
         timeout = settings.grok_timeout_seconds
         proxy = settings.grok_proxy or None
         batch_count = 0
