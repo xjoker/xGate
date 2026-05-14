@@ -165,6 +165,27 @@ class LogDB:
                 );
                 CREATE INDEX IF NOT EXISTS idx_file_dl_ts ON file_downloads(created_at);
                 CREATE INDEX IF NOT EXISTS idx_file_dl_st ON file_downloads(status);
+                CREATE TABLE IF NOT EXISTS accounts (
+                    label                TEXT    PRIMARY KEY,
+                    cookie               TEXT    NOT NULL DEFAULT '',
+                    user_agent           TEXT    NOT NULL DEFAULT '',
+                    browser              TEXT    NOT NULL DEFAULT 'chrome142',
+                    proxy                TEXT    NOT NULL DEFAULT '',
+                    statsig_id           TEXT    NOT NULL DEFAULT '',
+                    enabled              INTEGER NOT NULL DEFAULT 1,
+                    priority             INTEGER NOT NULL DEFAULT 1,
+                    weight               INTEGER NOT NULL DEFAULT 10,
+                    status               TEXT    NOT NULL DEFAULT 'enabled',
+                    cooldown_until       REAL    NOT NULL DEFAULT 0,
+                    last_used_at         REAL    NOT NULL DEFAULT 0,
+                    last_error_code      TEXT    NOT NULL DEFAULT '',
+                    last_error_at        REAL    NOT NULL DEFAULT 0,
+                    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                    success_count        INTEGER NOT NULL DEFAULT 0,
+                    fail_count           INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE INDEX IF NOT EXISTS idx_accounts_priority ON accounts(priority);
+                CREATE INDEX IF NOT EXISTS idx_accounts_status   ON accounts(status);
                 CREATE INDEX IF NOT EXISTS idx_chat_ts   ON chat_logs(created_at);
                 CREATE INDEX IF NOT EXISTS idx_image_ts  ON image_logs(created_at);
                 CREATE INDEX IF NOT EXISTS idx_video_ts  ON video_logs(created_at);
