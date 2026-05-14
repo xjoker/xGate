@@ -55,7 +55,7 @@ class AuthChannelTests(unittest.TestCase):
 
     def setUp(self) -> None:
         # 每个 case 清空 session 表，避免 cookie 互相串
-        session_store._sessions.clear()
+        session_store.revoke_all()
 
     # --- channel 1: Authorization: Bearer ---------------------------------
 
@@ -121,8 +121,9 @@ class AuthChannelTests(unittest.TestCase):
     def test_cookie_post_without_csrf_returns_403(self) -> None:
         login = self.client.post("/v1/auth/login", data={"api_key": TEST_API_KEY})
         self.assertEqual(login.status_code, 200)
-        # 手工删 X-CSRF-Token 头模拟没附 csrf 的 POST
-        r = self.client.post("/v1/embeddings")
+        # 手工不附 X-CSRF-Token 头，使用 /v1/auth/logout 触发 CSRF 校验
+        # （logout 有独立的 CSRF 逻辑，session 有效时不带 csrf 返回 403）
+        r = self.client.post("/v1/grok-files/sync-now")
         self.assertEqual(r.status_code, 403)
         self.assertEqual(r.json()["detail"]["type"], "permission_error")
         self.assertEqual(r.json()["detail"]["code"], "csrf_failed")
@@ -130,15 +131,16 @@ class AuthChannelTests(unittest.TestCase):
     def test_cookie_post_with_correct_csrf_passes(self) -> None:
         login = self.client.post("/v1/auth/login", data={"api_key": TEST_API_KEY})
         csrf = login.json()["csrf_token"]
-        r = self.client.post("/v1/embeddings", headers={"X-CSRF-Token": csrf})
-        # 占位端点本身返回 501，但能进得去说明鉴权 + csrf 都过了
-        self.assertEqual(r.status_code, 501)
+        r = self.client.post("/v1/grok-files/sync-now", headers={"X-CSRF-Token": csrf})
+        # 能进得去说明鉴权 + csrf 都过了（sync-now 本身可能返回 200 或其他业务状态）
+        self.assertNotEqual(r.status_code, 403)
+        self.assertNotEqual(r.status_code, 401)
 
     def test_cookie_post_with_mismatched_csrf_fails(self) -> None:
         login = self.client.post("/v1/auth/login", data={"api_key": TEST_API_KEY})
         self.assertEqual(login.status_code, 200)
         # csrf cookie 由 TestClient 自动带；header 给一个不一样的
-        r = self.client.post("/v1/embeddings", headers={"X-CSRF-Token": "fake-csrf"})
+        r = self.client.post("/v1/grok-files/sync-now", headers={"X-CSRF-Token": "fake-csrf"})
         self.assertEqual(r.status_code, 403)
 
     def test_logout_without_csrf_is_blocked(self) -> None:
@@ -188,25 +190,26 @@ class PlaceholderEndpointTests(unittest.TestCase):
         cls.client = TestClient(main_mod.app)
 
     def setUp(self) -> None:
-        session_store._sessions.clear()
+        session_store.revoke_all()
         self.client.cookies.clear()
 
     def _h(self) -> dict:
         return {"Authorization": f"Bearer {TEST_API_KEY}"}
 
-    def test_embeddings_returns_501(self) -> None:
+    def test_embeddings_returns_404(self) -> None:
+        # /v1/embeddings 路由已被有意移除，FastAPI 返回 404（Not Found）
         r = self.client.post("/v1/embeddings", headers=self._h())
-        self.assertEqual(r.status_code, 501)
-        body = r.json()
-        self.assertEqual(body["error"]["code"], "not_implemented")
+        self.assertEqual(r.status_code, 404)
 
-    def test_completions_returns_501(self) -> None:
+    def test_completions_returns_404(self) -> None:
+        # /v1/completions 路由已被有意移除，FastAPI 返回 404（Not Found）
         r = self.client.post("/v1/completions", headers=self._h())
-        self.assertEqual(r.status_code, 501)
+        self.assertEqual(r.status_code, 404)
 
-    def test_audio_speech_returns_501(self) -> None:
+    def test_audio_speech_returns_404(self) -> None:
+        # /v1/audio/speech 路由已被有意移除，FastAPI 返回 404（Not Found）
         r = self.client.post("/v1/audio/speech", headers=self._h())
-        self.assertEqual(r.status_code, 501)
+        self.assertEqual(r.status_code, 404)
 
 
 class DownloadEndpointSecurityTests(unittest.TestCase):
@@ -218,7 +221,7 @@ class DownloadEndpointSecurityTests(unittest.TestCase):
         cls.client = TestClient(main_mod.app)
 
     def setUp(self) -> None:
-        session_store._sessions.clear()
+        session_store.revoke_all()
         self.client.cookies.clear()
 
     def test_query_api_key_no_longer_authenticates(self) -> None:
@@ -262,7 +265,7 @@ class ChatCompletionsTests(unittest.TestCase):
         cls.client = TestClient(main_mod.app)
 
     def setUp(self) -> None:
-        session_store._sessions.clear()
+        session_store.revoke_all()
         self.client.cookies.clear()
 
     def _h(self) -> dict:
@@ -395,7 +398,7 @@ class ApiKeyRotationTests(unittest.TestCase):
         cls.client = TestClient(main_mod.app)
 
     def setUp(self) -> None:
-        session_store._sessions.clear()
+        session_store.revoke_all()
         self.client.cookies.clear()
         _override_settings(TEST_API_KEY)
 
