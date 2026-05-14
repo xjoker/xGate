@@ -199,6 +199,41 @@ class ResponseShapeTests(unittest.TestCase):
         self.assertGreater(chunk["usage"]["prompt_tokens"], 0)
 
 
+class TokenCountTests(unittest.TestCase):
+    """count_tokens / estimate_tokens 单元测试。"""
+
+    def test_count_tokens_basic_english(self) -> None:
+        from mini_grok_api.openai_compat import count_tokens
+        # "hello world" 在 cl100k_base 里是 2 个 token，不应退化成 len/4=2
+        result = count_tokens("hello world")
+        self.assertEqual(result, 2)
+
+    def test_count_tokens_cyrillic_more_accurate(self) -> None:
+        from mini_grok_api.openai_compat import count_tokens
+        # tiktoken 对多字节字符的估算应比 len//4 更准
+        text = "Привет мир"
+        result = count_tokens(text)
+        # tiktoken cl100k_base 给出 5 token；len//4 仅给 2
+        self.assertGreater(result, len(text) // 4)
+
+    def test_count_tokens_empty_string(self) -> None:
+        from mini_grok_api.openai_compat import count_tokens
+        self.assertEqual(count_tokens(""), 0)
+
+    def test_estimate_tokens_none_returns_zero(self) -> None:
+        from mini_grok_api.openai_compat import estimate_tokens
+        self.assertEqual(estimate_tokens(None), 0)
+
+    def test_estimate_tokens_empty_returns_zero(self) -> None:
+        from mini_grok_api.openai_compat import estimate_tokens
+        self.assertEqual(estimate_tokens(""), 0)
+
+    def test_estimate_tokens_delegates_to_count_tokens(self) -> None:
+        from mini_grok_api.openai_compat import count_tokens, estimate_tokens
+        text = "the quick brown fox"
+        self.assertEqual(estimate_tokens(text), count_tokens(text))
+
+
 class ModelsListTests(unittest.TestCase):
     def test_list_models_has_openai_fields(self) -> None:
         from mini_grok_api.models import list_models

@@ -58,6 +58,7 @@ from .models import get_model, get_model_specs, list_models, model_to_openai, se
 from .monitor import Monitor
 from .openai_compat import (
     chat_response,
+    count_tokens,
     error_payload,
     response_id,
     sse_data,
@@ -1753,7 +1754,7 @@ async def chat_completions(
     logger.info("chat: model=%s done stream=False in %.1fs len=%d",
                 req.model, time.monotonic() - t0, len(content))
     finish_reason = "stop"
-    if max_out is not None and max(1, len(content) // 4) >= max_out:
+    if max_out is not None and count_tokens(content) >= max_out:
         finish_reason = "length"
         # 按字符近似截断到目标 token 上限
         content = content[: max_out * 4]
