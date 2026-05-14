@@ -3,7 +3,8 @@ name: Build & Publish Docker Image
 on:
   push:
     tags:
-      - "[0-9]*"
+      - "v[0-9]*"       # v0.2.0 SemVer 风格（推荐）
+      - "[0-9]*"        # 0.1.x 历史裸版本风格（向后兼容）
   workflow_dispatch:
 
 jobs:
