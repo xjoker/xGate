@@ -30,6 +30,13 @@ class LogDB:
         conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
+    @staticmethod
+    def _ensure_column(conn: sqlite3.Connection, table: str, column: str, decl: str) -> None:
+        """如果列不存在则 ALTER TABLE ADD COLUMN（SQLite 迁移工具函数）。"""
+        cols = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
     def _init(self) -> None:
         with self._connect() as conn:
             conn.executescript("""
@@ -235,6 +242,9 @@ class LogDB:
             if "quota_cache_json" not in acc_cols:
                 try: conn.execute("ALTER TABLE accounts ADD COLUMN quota_cache_json TEXT NOT NULL DEFAULT '{}'")
                 except Exception: pass
+            # account_label 列迁移（chat_logs / image_logs / video_logs / mcp_logs）
+            for _tbl in ("chat_logs", "image_logs", "video_logs", "mcp_logs"):
+                self._ensure_column(conn, _tbl, "account_label", "TEXT NOT NULL DEFAULT ''")
 
     # ── Write ─────────────────────────────────────────────────────────────────
 
@@ -248,14 +258,15 @@ class LogDB:
         status: str,
         duration_ms: int,
         error: str | None = None,
+        account_label: str = "",
     ) -> None:
         try:
             with self._connect() as conn:
                 conn.execute(
                     "INSERT INTO chat_logs"
-                    " (request_id,created_at,model,prompt,response,status,duration_ms,error)"
-                    " VALUES (?,?,?,?,?,?,?,?)",
-                    (request_id, time.time(), model, prompt, response, status, duration_ms, error),
+                    " (request_id,created_at,model,prompt,response,status,duration_ms,error,account_label)"
+                    " VALUES (?,?,?,?,?,?,?,?,?)",
+                    (request_id, time.time(), model, prompt, response, status, duration_ms, error, account_label),
                 )
         except Exception as exc:
             logger.warning("log_chat failed: %s", exc)
@@ -273,18 +284,19 @@ class LogDB:
         status: str,
         duration_ms: int,
         error: str | None = None,
+        account_label: str = "",
     ) -> None:
         try:
             with self._connect() as conn:
                 conn.execute(
                     "INSERT INTO image_logs"
                     " (request_id,created_at,model,prompt,image_paths,image_count,"
-                    "  aspect_ratio,source,status,duration_ms,error)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    "  aspect_ratio,source,status,duration_ms,error,account_label)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         request_id, time.time(), model, prompt,
                         json.dumps(image_paths or []), image_count,
-                        aspect_ratio, source, status, duration_ms, error,
+                        aspect_ratio, source, status, duration_ms, error, account_label,
                     ),
                 )
         except Exception as exc:
@@ -305,17 +317,19 @@ class LogDB:
         status: str,
         duration_ms: int,
         error: str | None = None,
+        account_label: str = "",
     ) -> None:
         try:
             with self._connect() as conn:
                 conn.execute(
                     "INSERT INTO video_logs"
                     " (request_id,created_at,model,prompt,video_path,session_id,"
-                    "  aspect_ratio,duration_sec,resolution,source,status,duration_ms,error)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "  aspect_ratio,duration_sec,resolution,source,status,duration_ms,error,account_label)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         request_id, time.time(), model, prompt, video_path, session_id,
                         aspect_ratio, duration_sec, resolution, source, status, duration_ms, error,
+                        account_label,
                     ),
                 )
         except Exception as exc:
@@ -332,14 +346,16 @@ class LogDB:
         status: str,
         duration_ms: int,
         error: str | None = None,
+        account_label: str = "",
     ) -> None:
         try:
             with self._connect() as conn:
                 conn.execute(
                     "INSERT INTO mcp_logs"
-                    " (request_id,created_at,tool,model,prompt,response,status,duration_ms,error)"
-                    " VALUES (?,?,?,?,?,?,?,?,?)",
-                    (request_id, time.time(), tool, model, prompt, response, status, duration_ms, error),
+                    " (request_id,created_at,tool,model,prompt,response,status,duration_ms,error,account_label)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (request_id, time.time(), tool, model, prompt, response, status, duration_ms, error,
+                     account_label),
                 )
         except Exception as exc:
             logger.warning("log_mcp failed: %s", exc)
@@ -441,6 +457,7 @@ class LogDB:
         limit: int = 50,
         from_ts: float | None = None,
         to_ts: float | None = None,
+        account_label: str = "",
     ) -> tuple[list[dict], int]:
         tables: list[tuple[str, str]] = []
         if log_type in ("all", "chat", "dialog"):
@@ -454,7 +471,7 @@ class LogDB:
 
         all_rows: list[dict] = []
         total = 0
-        cond, params = self._where(search, from_ts, to_ts)
+        cond, params = self._where(search, from_ts, to_ts, account_label)
 
         for tbl, typ in tables:
             with self._connect() as conn:
@@ -472,6 +489,7 @@ class LogDB:
                 all_rows.extend(self._to_dict(r) for r in rows)
 
         if log_type in ("all", "system"):
+            # system_logs 无 account_label 列，不过滤（传 "" 给 _where_system 仅按原逻辑）
             sys_cond, sys_params = self._where_system(search, from_ts, to_ts)
             with self._connect() as conn:
                 cnt = conn.execute(
@@ -499,7 +517,12 @@ class LogDB:
         return all_rows, total
 
     @staticmethod
-    def _where(search: str, from_ts: float | None, to_ts: float | None) -> tuple[str, list]:
+    def _where(
+        search: str,
+        from_ts: float | None,
+        to_ts: float | None,
+        account_label: str = "",
+    ) -> tuple[str, list]:
         parts = ["1=1"]
         params: list = []
         if search:
@@ -511,6 +534,9 @@ class LogDB:
         if to_ts:
             parts.append("created_at <= ?")
             params.append(to_ts)
+        if account_label:
+            parts.append("account_label = ?")
+            params.append(account_label)
         return " AND ".join(parts), params
 
     @staticmethod

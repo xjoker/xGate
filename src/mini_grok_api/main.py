@@ -1731,7 +1731,6 @@ async def videos_generate(
         duration_sec = int(req.duration.rstrip("s")) if req.duration else 5
     except ValueError:
         duration_sec = 5
-    monitor.record_start()
     rid = response_id()
     t0 = time.monotonic()
     prompt_text = req.prompt.strip()
@@ -1742,7 +1741,10 @@ async def videos_generate(
     import uuid as _uuid
     session_id = str(_uuid.uuid4())
     video_id: str | None = None
+    _acq_label = ""
     with account_pool.acquire(model_id="grok-imagine-video") as acq:
+        _acq_label = acq.label
+        monitor.record_start(acq.label)
         try:
             video_id = await create_video(
                 acq.settings,
@@ -1759,32 +1761,35 @@ async def videos_generate(
                 logger.error("video generate error body: %s", exc.body)
                 msg = f"{msg} | upstream: {exc.body}"
             acq.mark_failure(exc.code or "upstream_5xx", retry_after=exc.retry_after)
-            monitor.record_failure(exc.status_code, str(exc), cloudflare=exc.code == "cloudflare_challenge")
+            monitor.record_failure(acq.label, exc.status_code, str(exc), cloudflare=exc.code == "cloudflare_challenge")
             log_db.log_video(
                 request_id=rid, model="grok-imagine-video", prompt=prompt_text,
                 session_id=session_id, aspect_ratio=aspect_ratio,
                 duration_sec=duration_sec, resolution=resolution, source="api",
                 status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+                account_label=acq.label,
             )
             return _error_response(msg, exc.status_code, code=exc.code or "upstream_error")
         except Exception as exc:
             acq.mark_failure("upstream_5xx")
             logger.exception("video generation failed")
-            monitor.record_failure(500, str(exc))
+            monitor.record_failure(acq.label, 500, str(exc))
             log_db.log_video(
                 request_id=rid, model="grok-imagine-video", prompt=prompt_text,
                 session_id=session_id, aspect_ratio=aspect_ratio,
                 duration_sec=duration_sec, resolution=resolution, source="api",
                 status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+                account_label=acq.label,
             )
             return _error_response("Internal server error", 500)
-    monitor.record_success()
+    monitor.record_success(_acq_label)
     log_db.log_video(
         request_id=rid, model="grok-imagine-video", prompt=prompt_text,
         video_path=f"data/images/{session_id}/{video_id}.mp4",
         session_id=session_id, aspect_ratio=aspect_ratio,
         duration_sec=duration_sec, resolution=resolution, source="api",
         status="success", duration_ms=int((time.monotonic() - t0) * 1000),
+        account_label=_acq_label,
     )
     return JSONResponse({"ok": True, "video_id": video_id})
 
@@ -1850,7 +1855,6 @@ async def images_generations(
             code="unsupported_parameter",
         )
 
-    monitor.record_start()
     prompt = req.prompt.strip()
     aspect_ratio = resolve_aspect_ratio(req.size)
     logger.info("image: model=%s prompt=%r aspect=%s n=%d",
@@ -1858,6 +1862,7 @@ async def images_generations(
     session_id = str(__import__("uuid").uuid4())
     session_dir = _init_session(session_id, prompt=prompt, source="api", aspect_ratio=aspect_ratio)
     t0 = time.monotonic()
+    monitor.record_start()
     try:
         batch = await ws_gateway.generate_images(
             prompt=prompt,
@@ -1868,7 +1873,7 @@ async def images_generations(
         images = sorted(batch[: req.n], key=lambda r: r.order)
     except GrokClientError as exc:
         code = exc.code or "upstream_error"
-        monitor.record_failure(exc.status_code, str(exc), cloudflare=code == "cloudflare_challenge")
+        monitor.record_failure(status=exc.status_code, summary=str(exc), cloudflare=code == "cloudflare_challenge")
         log_db.log_image(
             request_id=session_id, model=model_id, prompt=prompt,
             aspect_ratio=aspect_ratio, source="api",
@@ -1877,7 +1882,7 @@ async def images_generations(
         return _error_response(str(exc), exc.status_code, code=code)
     except Exception as exc:
         logger.exception("image generation failed")
-        monitor.record_failure(500, str(exc))
+        monitor.record_failure(status=500, summary=str(exc))
         log_db.log_image(
             request_id=session_id, model=model_id, prompt=prompt,
             aspect_ratio=aspect_ratio, source="api",
@@ -1986,11 +1991,12 @@ async def chat_completions(
                             if include_usage:
                                 yield sse_data(stream_usage_chunk(rid, req.model, prompt, content))
                             yield "data: [DONE]\n\n"
-                            monitor.record_success()
+                            monitor.record_success(acq.label)
                             log_db.log_chat(
                                 request_id=rid, model=req.model, prompt=prompt,
                                 response=content,
                                 status="success", duration_ms=int((time.monotonic() - t0) * 1000),
+                                account_label=acq.label,
                             )
                         else:
                             # 普通 content 分支，走标准流式输出
@@ -2003,28 +2009,31 @@ async def chat_completions(
                             if include_usage:
                                 yield sse_data(stream_usage_chunk(rid, req.model, prompt, content))
                             yield "data: [DONE]\n\n"
-                            monitor.record_success()
+                            monitor.record_success(acq.label)
                             log_db.log_chat(
                                 request_id=rid, model=req.model, prompt=prompt,
                                 response=content,
                                 status="success", duration_ms=int((time.monotonic() - t0) * 1000),
+                                account_label=acq.label,
                             )
                     except GrokClientError as exc:
                         code = exc.code or "upstream_error"
                         acq.mark_failure(code, retry_after=exc.retry_after)
-                        monitor.record_failure(exc.status_code, str(exc), cloudflare=code == "cloudflare_challenge")
+                        monitor.record_failure(acq.label, exc.status_code, str(exc), cloudflare=code == "cloudflare_challenge")
                         log_db.log_chat(
                             request_id=rid, model=req.model, prompt=prompt,
                             status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+                            account_label=acq.label,
                         )
                         yield sse_error(str(exc), error_type="api_error", code=code)
                         yield "data: [DONE]\n\n"
                     except Exception as exc:
                         acq.mark_failure("upstream_5xx")
-                        monitor.record_failure(500, str(exc))
+                        monitor.record_failure(acq.label, 500, str(exc))
                         log_db.log_chat(
                             request_id=rid, model=req.model, prompt=prompt,
                             status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+                            account_label=acq.label,
                         )
                         yield sse_error(str(exc))
                         yield "data: [DONE]\n\n"
@@ -2072,30 +2081,33 @@ async def chat_completions(
                     if include_usage:
                         yield sse_data(stream_usage_chunk(rid, req.model, prompt, "".join(chunks)))
                     yield "data: [DONE]\n\n"
-                    monitor.record_success()
+                    monitor.record_success(acq.label)
                     logger.info("chat: model=%s done stream=True in %.1fs chunks=%d",
                                 req.model, time.monotonic() - t0, len(chunks))
                     log_db.log_chat(
                         request_id=rid, model=req.model, prompt=prompt,
                         response="".join(chunks),
                         status="success", duration_ms=int((time.monotonic() - t0) * 1000),
+                        account_label=acq.label,
                     )
                 except GrokClientError as exc:
                     code = exc.code or "upstream_error"
                     acq.mark_failure(code, retry_after=exc.retry_after)
-                    monitor.record_failure(exc.status_code, str(exc), cloudflare=code == "cloudflare_challenge")
+                    monitor.record_failure(acq.label, exc.status_code, str(exc), cloudflare=code == "cloudflare_challenge")
                     log_db.log_chat(
                         request_id=rid, model=req.model, prompt=prompt,
                         status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+                        account_label=acq.label,
                     )
                     yield sse_error(str(exc), error_type="api_error", code=code)
                     yield "data: [DONE]\n\n"
                 except Exception as exc:
                     acq.mark_failure("upstream_5xx")
-                    monitor.record_failure(500, str(exc))
+                    monitor.record_failure(acq.label, 500, str(exc))
                     log_db.log_chat(
                         request_id=rid, model=req.model, prompt=prompt,
                         status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+                        account_label=acq.label,
                     )
                     yield sse_error(str(exc))
                     yield "data: [DONE]\n\n"
@@ -2108,25 +2120,29 @@ async def chat_completions(
 
     rid = response_id()
     t0 = time.monotonic()
+    _chat_acq_label = ""
     with account_pool.acquire(model_id=req.model) as acq:
+        _chat_acq_label = acq.label
         try:
             content = await complete_chat(acq.settings, message=prompt, mode_id=spec.mode_id)
         except GrokClientError as exc:
             code = exc.code or "upstream_error"
             acq.mark_failure(code, retry_after=exc.retry_after)
-            monitor.record_failure(exc.status_code, str(exc), cloudflare=code == "cloudflare_challenge")
+            monitor.record_failure(acq.label, exc.status_code, str(exc), cloudflare=code == "cloudflare_challenge")
             log_db.log_chat(
                 request_id=rid, model=req.model, prompt=prompt,
                 status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+                account_label=acq.label,
             )
             return _error_response(str(exc), exc.status_code, code=code)
         except Exception as exc:
             acq.mark_failure("upstream_5xx")
             logger.exception("chat completion failed")
-            monitor.record_failure(500, str(exc))
+            monitor.record_failure(acq.label, 500, str(exc))
             log_db.log_chat(
                 request_id=rid, model=req.model, prompt=prompt,
                 status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+                account_label=acq.label,
             )
             return _error_response("Internal server error", 500)
 
@@ -2140,10 +2156,11 @@ async def chat_completions(
         if tc is not None:
             tool_name = tc["name"]
             tool_args = tc.get("arguments", {})
-            monitor.record_success()
+            monitor.record_success(_chat_acq_label)
             log_db.log_chat(
                 request_id=rid, model=req.model, prompt=prompt, response=content,
                 status="success", duration_ms=int((time.monotonic() - t0) * 1000),
+                account_label=_chat_acq_label,
             )
             return JSONResponse(chat_response_tool_call(req.model, tool_name, tool_args, prompt, rid=rid))
 
@@ -2152,10 +2169,11 @@ async def chat_completions(
         finish_reason = "length"
         # 按字符近似截断到目标 token 上限
         content = content[: max_out * 4]
-    monitor.record_success()
+    monitor.record_success(_chat_acq_label)
     log_db.log_chat(
         request_id=rid, model=req.model, prompt=prompt, response=content,
         status="success", duration_ms=int((time.monotonic() - t0) * 1000),
+        account_label=_chat_acq_label,
     )
     return JSONResponse(chat_response(req.model, content, prompt, rid=rid, finish_reason=finish_reason))
 
@@ -2746,7 +2764,9 @@ async def chat_imagine_endpoint(
     sess_id = str(uuid.uuid4())
     t0 = time.monotonic()
     summary = ""
+    _chat_imagine_label = ""
     with account_pool.acquire(model_id=req.mode_id) as acq:
+        _chat_imagine_label = acq.label
         try:
             urls, summary = await chat_imagine(
                 acq.settings, message=req.prompt, mode_id=req.mode_id,
@@ -2758,6 +2778,7 @@ async def chat_imagine_endpoint(
                 request_id=sess_id, model=req.mode_id, prompt=req.prompt,
                 image_count=0, aspect_ratio="", source="chat-imagine",
                 status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+                account_label=acq.label,
             )
             return _error_response(str(exc), exc.status_code, code=exc.code or "upstream_error")
         except Exception as exc:
@@ -2767,6 +2788,7 @@ async def chat_imagine_endpoint(
                 request_id=sess_id, model=req.mode_id, prompt=req.prompt,
                 image_count=0, aspect_ratio="", source="chat-imagine",
                 status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+                account_label=acq.label,
             )
             return _error_response("Internal server error", 500)
         full = []
@@ -2805,6 +2827,7 @@ async def chat_imagine_endpoint(
         image_paths=saved_paths or full, image_count=len(full),
         aspect_ratio="", source="chat-imagine",
         status="success", duration_ms=int((time.monotonic() - t0) * 1000),
+        account_label=_chat_imagine_label,
     )
     return JSONResponse({
         "image_urls": full,
@@ -2886,7 +2909,7 @@ async def import_curl(curl_text: Annotated[str, Form()]) -> JSONResponse:
     except GrokClientError as exc:
         code = exc.code or "upstream_error"
         is_cf = code in {"cloudflare_challenge", "upstream_403"}
-        monitor.record_failure(exc.status_code, str(exc), cloudflare=is_cf)
+        monitor.record_failure(status=exc.status_code, summary=str(exc), cloudflare=is_cf)
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
     update_kwargs: dict[str, object] = {
@@ -2897,7 +2920,7 @@ async def import_curl(curl_text: Annotated[str, Form()]) -> JSONResponse:
     if result.statsig_id:
         update_kwargs["grok_statsig_id"] = result.statsig_id
     settings_store.update(**update_kwargs)
-    monitor.record_success(int(smoke["status_code"]))
+    monitor.record_success(status=int(smoke["status_code"]))
     return JSONResponse({"ok": True, "message": f"cURL 导入和冒烟成功，状态码 {smoke['status_code']}。"})
 
 
@@ -2988,10 +3011,11 @@ async def logs_query(
     limit: int = 50,
     from_ts: float | None = None,
     to_ts: float | None = None,
+    account_label: str = "",
 ) -> JSONResponse:
     rows, total = log_db.query(
         log_type=log_type, search=search, offset=offset, limit=limit,
-        from_ts=from_ts, to_ts=to_ts,
+        from_ts=from_ts, to_ts=to_ts, account_label=account_label,
     )
     return JSONResponse({"total": total, "offset": offset, "limit": limit, "data": rows})
 
@@ -3140,9 +3164,20 @@ async def admin_dashboard(settings: Annotated[Settings, Depends(_settings)]) -> 
             "failure_count": snap.failure_count,
             "cloudflare_challenge": snap.cloudflare_challenge,
             "recent_error": snap.recent_error_summary,
+            "per_account": {
+                label: {
+                    "total_requests": m.total_requests,
+                    "success_count": m.success_count,
+                    "failure_count": m.failure_count,
+                    "recent_upstream_status": m.recent_upstream_status,
+                    "recent_error_summary": m.recent_error_summary,
+                }
+                for label, m in snap.per_account.items()
+            },
         },
         "cookie_configured": bool(settings.grok_cookie),
         "proxy_configured": bool(settings.grok_proxy),
+        "accounts": [asdict(a) for a in account_pool.list_accounts()],
     })
 
 
