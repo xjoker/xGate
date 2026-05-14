@@ -800,7 +800,9 @@ def _build_tools_system_block(req: ChatCompletionRequest) -> str | None:
         + "\n\n"
         "When you decide to use a tool, respond with ONLY a JSON object on a single line:\n"
         '{"tool_call": {"name": "<tool_name>", "arguments": {...}}}\n'
-        "Otherwise respond normally with plain text."
+        "Otherwise respond normally with plain text.\n\n"
+        "Previous tool calls and their results are shown in the conversation. "
+        "When you have enough information, respond with plain text (not a tool_call JSON)."
     )
 
     # tool_choice="required" 或指定 function 时追加强制提示（best-effort）
@@ -824,8 +826,25 @@ def _extract_prompt(req: ChatCompletionRequest) -> str:
     工具注入（基础版 single-shot tool_call）：
     当 req.tools 非空且 tool_choice!="none" 时，在最前面拼入系统工具描述块。
     若原 messages 里已有 system，工具块拼在 system 消息之后（让用户 system 优先）。
+
+    多轮 tool_call 支持：
+    - role="assistant" 带 tool_calls（content=None）→ 序列化为 [assistant called tool ...] 块
+    - role="tool" 带 tool_call_id → 反查对应 assistant tool_call 的 name，
+      序列化为 [tool `<name>` returned] 块；反查失败则回退用 tool_call_id。
     """
     tools_block = _build_tools_system_block(req)
+
+    # 预先建立 tool_call_id → name 映射，供 role="tool" 消息反查
+    _call_id_to_name: dict[str, str] = {}
+    for _msg in req.messages:
+        if _msg.role == "assistant" and _msg.tool_calls:
+            for _tc in _msg.tool_calls:
+                if isinstance(_tc, dict):
+                    _cid = _tc.get("id")
+                    _fn = _tc.get("function") or {}
+                    _name = _fn.get("name") if isinstance(_fn, dict) else None
+                    if _cid and _name:
+                        _call_id_to_name[_cid] = _name
 
     parts: list[str] = []
     tools_injected = False
@@ -833,6 +852,35 @@ def _extract_prompt(req: ChatCompletionRequest) -> str:
     for message in req.messages:
         role = message.role
         content = message.content
+
+        # --- role="tool"：工具执行结果 ---
+        if role == "tool":
+            tool_call_id = message.tool_call_id or ""
+            tool_name = _call_id_to_name.get(tool_call_id, tool_call_id)
+            result_text = content if isinstance(content, str) else ""
+            parts.append(f"[tool `{tool_name}` returned]:\n{result_text}")
+            continue
+
+        # --- role="assistant" 带 tool_calls（content=None）：上一轮模型调工具 ---
+        if role == "assistant" and message.tool_calls and content is None:
+            call_lines: list[str] = []
+            for tc in message.tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function") or {}
+                tc_name = fn.get("name") if isinstance(fn, dict) else None
+                tc_args = fn.get("arguments") if isinstance(fn, dict) else None
+                if not tc_name:
+                    continue
+                # arguments 已是 JSON 字符串，直接展示
+                call_lines.append(
+                    f"[assistant called tool `{tc_name}` with args]:\n{tc_args or '{}'}"
+                )
+            if call_lines:
+                parts.append("\n\n".join(call_lines))
+            continue
+
+        # --- 普通消息（str content）---
         if isinstance(content, str):
             text = content.strip()
             if text:
@@ -842,6 +890,8 @@ def _extract_prompt(req: ChatCompletionRequest) -> str:
                 parts.append(f"[system]: {tools_block}")
                 tools_injected = True
             continue
+
+        # --- 多模态列表 content ---
         if isinstance(content, list):
             segments: list[str] = []
             for block in content:
