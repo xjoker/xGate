@@ -8,10 +8,19 @@ from __future__ import annotations
 
 import os
 import pathlib
+import sys
 from contextlib import asynccontextmanager
 
 # 项目根 cwd（main.py 用 cwd 找 data/config/mini.toml）
-os.chdir(pathlib.Path(__file__).resolve().parent.parent)
+_REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+os.chdir(_REPO_ROOT)
+
+# worktree 内新增的模块（如 accounts.py）尚未 editable-install 到 .venv，
+# 需要显式把 worktree 的 src 目录放到 sys.path 最前面，
+# 使其优先于主仓库的 editable install 路径。
+_WORKTREE_SRC = str(_REPO_ROOT / "src")
+if _WORKTREE_SRC not in sys.path:
+    sys.path.insert(0, _WORKTREE_SRC)
 
 
 @asynccontextmanager
