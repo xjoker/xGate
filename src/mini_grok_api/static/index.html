@@ -4220,7 +4220,7 @@ window.loadFiles = async function(reset = false) {
       while (cloudPagesScanned < 5 && !_filesState.cloudExhausted && appended === 0) {
         const pt = _filesState.cloudNextPageToken;
         const url = '/v1/grok/assets?page_size=50' + (pt ? '&page_token=' + encodeURIComponent(pt) : '');
-        const d = await api('GET', url);
+        const d = await api('POST', url);
         const raw = d.assets || [];
         appended = _appendCards(raw);
         _filesState.cloudNextPageToken = d.nextPageToken || '';
@@ -4274,7 +4274,7 @@ const _BG_PROBE_INTERVAL_MS = 30 * 1000;  // 30 秒
 
 async function _bgProbeNewAssets() {
   try {
-    const d = await api('GET', '/v1/grok/assets?page_size=50');
+    const d = await api('POST', '/v1/grok/assets?page_size=50');
     const raw = d.assets || [];
     const newOnes = raw.filter(a => a.assetId && !_filesState.seenIds.has(a.assetId));
     if (!newOnes.length) return;

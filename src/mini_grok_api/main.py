@@ -2908,9 +2908,12 @@ async def admin_dashboard(settings: Annotated[Settings, Depends(_settings)]) -> 
     })
 
 
-@app.get("/v1/grok/assets", tags=[_TAG_FILES], summary="列出 Grok Files",
-         description="分页拉取 Grok 云端文件列表（图片/视频）。",
-         dependencies=[Depends(_require_api_key)])
+@app.post("/v1/grok/assets", tags=[_TAG_FILES], summary="列出 Grok Files",
+          description="分页拉取 Grok 云端文件列表（图片/视频）。",
+          dependencies=[Depends(_require_api_key)])
+# 原 GET 改 POST 防 CSRF（与 Wave 2 同批）：
+# 无路径参数 + 触发上游 HTTP + 写 DB + 消耗配额，风险最高。
+# FastAPI POST 同样支持 query 参数，前端无需改参数风格。
 async def grok_assets_list(
     settings: Annotated[Settings, Depends(_settings)],
     page_token: str = "",
