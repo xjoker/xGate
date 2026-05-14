@@ -551,7 +551,8 @@ async def grok_imagine_video(
                 else f"http://{s.server_host}"
             ) + f":{s.server_port}"
         )
-        video_url = f"{base}{serve_path}"
+        from .signed_url import sign_file_url as _sign_file_url
+        video_url = base + _sign_file_url(serve_path, s.api_key)
     else:
         video_url = None
     return {"video_url": video_url, "local_path": None, "duration_seconds": duration_seconds}

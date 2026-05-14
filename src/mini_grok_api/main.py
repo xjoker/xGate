@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from .auth_session import CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, session_store
 from .config import Settings, SettingsStore, load_settings, mask_secret
+from .signed_url import sign_file_url, verify_signed_path
 from .db import log_db
 from .curl_import import CurlImportError, parse_grok_curl
 from .grok_client import (
@@ -130,6 +131,18 @@ _TAGS_META = [
 ]
 
 settings_store = SettingsStore(load_settings())
+
+# ---------------------------------------------------------------------------
+# 签名 URL 控制
+# ---------------------------------------------------------------------------
+# 过渡期：False = 旧 URL（无签名）仍放行（warning），True = 严格要求签名（将来切换）
+_SIGNED_URL_ENFORCED = False
+
+
+def _sign_file_url(path: str) -> str:
+    """用当前 settings.api_key 对文件路径签名，返回带签名的完整路径。"""
+    return sign_file_url(path, settings_store.get().api_key)
+
 
 def _apply_models(settings: Settings) -> None:
     """从 settings.chat_models 全量加载模型注册表。"""
@@ -948,8 +961,22 @@ async def model_get(model_id: str) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 @app.get("/v1/files/image/{session_id}/{filename}", tags=[_TAG_GALLERY],
-         summary="获取图片文件", description="直接返回图片文件内容（无需认证）。URL 由图库接口提供，可直接在浏览器或 `<img>` 中使用。")
-async def serve_image(session_id: str, filename: str) -> FileResponse:
+         summary="获取图片文件", description="直接返回图片文件内容。URL 须携带 HMAC 签名（?sig=&exp=），由图库接口自动签发。")
+async def serve_image(
+    request: Request,
+    session_id: str,
+    filename: str,
+    sig: str = "",
+    exp: int = 0,
+) -> FileResponse:
+    url_path = request.url.path
+    api_key = settings_store.get().api_key
+    if not sig:
+        if _SIGNED_URL_ENFORCED:
+            raise HTTPException(status_code=403, detail="Signature required")
+        logger.warning("unsigned file access: %s", url_path)
+    elif not verify_signed_path(url_path, sig, exp, api_key):
+        raise HTTPException(status_code=403, detail="Invalid or expired signature")
     safe_sid = Path(session_id).name
     safe_fn = Path(filename).name
     path = IMAGE_DIR / safe_sid / safe_fn
@@ -962,8 +989,22 @@ _VIDEO_MEDIA_TYPES = {".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video
 
 
 @app.get("/v1/files/video/{session_id}/{filename}", tags=[_TAG_GALLERY],
-         summary="获取视频文件", description="直接返回视频文件内容（无需认证）。支持 mp4 / webm / mov，返回正确的 Content-Type。")
-async def serve_video(session_id: str, filename: str) -> FileResponse:
+         summary="获取视频文件", description="直接返回视频文件内容。支持 mp4 / webm / mov，返回正确的 Content-Type。URL 须携带 HMAC 签名（?sig=&exp=）。")
+async def serve_video(
+    request: Request,
+    session_id: str,
+    filename: str,
+    sig: str = "",
+    exp: int = 0,
+) -> FileResponse:
+    url_path = request.url.path
+    api_key = settings_store.get().api_key
+    if not sig:
+        if _SIGNED_URL_ENFORCED:
+            raise HTTPException(status_code=403, detail="Signature required")
+        logger.warning("unsigned file access: %s", url_path)
+    elif not verify_signed_path(url_path, sig, exp, api_key):
+        raise HTTPException(status_code=403, detail="Invalid or expired signature")
     safe_sid = Path(session_id).name
     safe_fn = Path(filename).name
     path = IMAGE_DIR / safe_sid / safe_fn
@@ -1354,9 +1395,22 @@ async def delete_local_grok_file(filename: str) -> JSONResponse:
 
 
 @app.get("/v1/grok-files/{filename}", tags=[_TAG_FILES],
-         summary="读取本地 Grok 文件（无需认证，路径含 UUID）")
-async def serve_grok_file(filename: str) -> FileResponse:
+         summary="读取本地 Grok 文件（HMAC 签名 URL）")
+async def serve_grok_file(
+    request: Request,
+    filename: str,
+    sig: str = "",
+    exp: int = 0,
+) -> FileResponse:
     from .grok_client import GROK_FILES_DIR
+    url_path = request.url.path
+    api_key = settings_store.get().api_key
+    if not sig:
+        if _SIGNED_URL_ENFORCED:
+            raise HTTPException(status_code=403, detail="Signature required")
+        logger.warning("unsigned file access: %s", url_path)
+    elif not verify_signed_path(url_path, sig, exp, api_key):
+        raise HTTPException(status_code=403, detail="Invalid or expired signature")
     safe_fn = Path(filename).name
     path = GROK_FILES_DIR / safe_fn
     if not path.exists() or not path.is_file():
@@ -1543,7 +1597,8 @@ async def images_generations(
     base = _base_url(settings)
 
     def _item(img: ImageResult) -> dict:
-        url = f"{base}/v1/files/image/{img.serve_path}"
+        raw_path = f"/v1/files/image/{img.serve_path}"
+        url = base + _sign_file_url(raw_path)
         return {"url": url}
 
     return JSONResponse({"created": int(time.time()), "data": [_item(img) for img in images]})
@@ -2109,11 +2164,12 @@ async def gallery(
         result = []
         for f in files:
             is_vid = f.suffix.lower() in _VIDEO_EXTS
+            raw_path = f"/v1/files/{'video' if is_vid else 'image'}/{sid}/{f.name}"
             result.append({
                 "session_id": sid,
                 "filename": f.name,
                 "file_type": "video" if is_vid else "image",
-                "url": f"{base}/v1/files/{'video' if is_vid else 'image'}/{sid}/{f.name}",
+                "url": base + _sign_file_url(raw_path),
                 "size_bytes": f.stat().st_size,
                 "created_at": f.stat().st_mtime,
             })
