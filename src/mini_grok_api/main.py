@@ -671,9 +671,23 @@ def _require_api_key(
             )["error"],
         )
 
+    # 判断 401 原因：
+    # - cookie 存在但 session 查不到 → 已过期或被撤销（合并为 session_revoked）
+    # - cookie 不存在但有 Header candidates（都校验失败） → api_key_invalid
+    # - cookie 不存在且无 Header → session_missing
+    if xgate_session is not None:
+        _401_code = "session_revoked"
+        _401_msg = "Session expired or revoked"
+    elif candidates:
+        _401_code = "api_key_invalid"
+        _401_msg = "Invalid API key"
+    else:
+        _401_code = "session_missing"
+        _401_msg = "No session or API key provided"
+
     raise HTTPException(
         status_code=401,
-        detail=error_payload("Invalid API key", error_type="authentication_error")["error"],
+        detail=error_payload(_401_msg, error_type="authentication_error", code=_401_code)["error"],
     )
 
 
@@ -808,7 +822,7 @@ async def auth_login(
         )
     if not submitted or not secrets.compare_digest(settings.api_key, submitted):
         return JSONResponse(
-            error_payload("Invalid API key", error_type="authentication_error"),
+            error_payload("Invalid API key", error_type="authentication_error", code="api_key_invalid"),
             status_code=401,
         )
     sess = session_store.create()
@@ -858,8 +872,10 @@ async def auth_whoami(
 ) -> JSONResponse:
     sess = session_store.get(xgate_session)
     if sess is None:
+        # cookie 存在但 session 查不到 → 过期或被撤销；cookie 不存在 → 未登录
+        _code = "session_revoked" if xgate_session is not None else "session_missing"
         return JSONResponse(
-            error_payload("Not logged in", error_type="authentication_error"),
+            error_payload("Not logged in", error_type="authentication_error", code=_code),
             status_code=401,
         )
     return JSONResponse({"ok": True, "csrf_token": sess.csrf, "expires_at": int(sess.expires_at)})
