@@ -22,6 +22,7 @@ from fastapi import Cookie, Depends, FastAPI, Form, Header, HTTPException, Reque
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
+from .accounts import AccountPool, AccountAcquisition  # noqa: F401 (AccountAcquisition for type hints)
 from .auth_session import CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, session_store
 from .config import Settings, SettingsStore, load_settings, mask_secret
 from .signed_url import sign_file_url, verify_signed_path
@@ -168,6 +169,7 @@ monitor = Monitor()
 ws_gateway = WsGateway()
 image_stream_worker = ImageStreamWorker()
 task_queue = TaskQueue()
+account_pool: AccountPool = AccountPool()  # 全局单例，lifespan 内 import_from_settings 完成初始化
 _mcp_app = create_mcp_app(settings_store.get)
 
 
@@ -211,7 +213,9 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
         logger.warning(
             "⚠️  api_key 仍为默认值 'change-me'，请在 data/config/mini.toml 的 [auth] 节下修改 api_key 后重启。"
         )
-    ws_gateway.start(settings_store.get)
+    account_pool.import_from_settings(_s)
+    logger.info("account pool initialized: %d accounts", len(account_pool.list_accounts()))
+    ws_gateway.start(settings_store.get, account_pool=account_pool)
     task_queue.start_worker(ws_gateway, log_db=log_db)
     log_db.reset_running_downloads()
     log_db.reset_running_deletes()
@@ -346,51 +350,51 @@ async def _file_download_worker() -> None:
             continue
 
         async def _do(job: dict) -> None:
-            settings = settings_store.get()
-            try:
-                path, _ = await save_grok_asset_local(
-                    settings, job["asset_key"], job["filename"], job["size_bytes"]
-                )
-                log_db.finish_download(job["id"], path=path)
-                # 同步标记 grok_assets 表中的下载状态（filename 可能含或不含扩展名）
-                fn = job["filename"]
-                asset_id = fn.rsplit(".", 1)[0] if "." in fn else fn
-                if asset_id:
-                    log_db.mark_asset_downloaded(asset_id, path)
-            except Exception as exc:
-                err_str = str(exc)
-                fn = job["filename"]
-                asset_id = fn.rsplit(".", 1)[0] if "." in fn else fn
-                # 404 / 410 → 立即永久失败
-                hard_perm = ("returned 404" in err_str or "returned 410" in err_str)
-                # 空 body → 视 asset 年龄而定：>24h 视为永久；<24h 让它继续重试（CDN 可能还在生成）
-                empty_err = ("empty_file" in err_str or "Asset download returned empty file" in err_str)
-                permanent = hard_perm
-                if empty_err and not permanent:
-                    # 查 asset 创建时间（直接 SQL 比 list_grok_assets_db 快）
-                    try:
-                        with log_db._connect() as _c:
-                            r = _c.execute("SELECT create_time FROM grok_assets WHERE asset_id=?", (asset_id,)).fetchone()
-                            ct = r["create_time"] if r else ""
-                        if ct:
-                            from datetime import datetime, timezone
-                            try:
-                                # Grok 时间格式: 2026-04-28T03:41:08.260755Z
-                                dt = datetime.fromisoformat(ct.replace("Z", "+00:00"))
-                                age_hours = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
-                                if age_hours > 24:
-                                    permanent = True  # 老 asset + 空 body → 已确认丢失
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-                log_db.finish_download(
-                    job["id"], error=err_str, permanent=permanent,
-                    max_attempts=8 if empty_err else 5,  # 空 body 给更多机会
-                    base_backoff_seconds=120.0 if empty_err else 30.0,  # 空 body 退避更长
-                )
-                if permanent and asset_id:
-                    log_db.mark_asset_unavailable(asset_id, reason=err_str[:200])
+            with account_pool.acquire() as _dl_acq:
+                try:
+                    path, _ = await save_grok_asset_local(
+                        _dl_acq.settings, job["asset_key"], job["filename"], job["size_bytes"]
+                    )
+                    log_db.finish_download(job["id"], path=path)
+                    # 同步标记 grok_assets 表中的下载状态（filename 可能含或不含扩展名）
+                    fn = job["filename"]
+                    asset_id = fn.rsplit(".", 1)[0] if "." in fn else fn
+                    if asset_id:
+                        log_db.mark_asset_downloaded(asset_id, path)
+                except Exception as exc:
+                    err_str = str(exc)
+                    fn = job["filename"]
+                    asset_id = fn.rsplit(".", 1)[0] if "." in fn else fn
+                    # 404 / 410 → 立即永久失败
+                    hard_perm = ("returned 404" in err_str or "returned 410" in err_str)
+                    # 空 body → 视 asset 年龄而定：>24h 视为永久；<24h 让它继续重试（CDN 可能还在生成）
+                    empty_err = ("empty_file" in err_str or "Asset download returned empty file" in err_str)
+                    permanent = hard_perm
+                    if empty_err and not permanent:
+                        # 查 asset 创建时间（直接 SQL 比 list_grok_assets_db 快）
+                        try:
+                            with log_db._connect() as _c:
+                                r = _c.execute("SELECT create_time FROM grok_assets WHERE asset_id=?", (asset_id,)).fetchone()
+                                ct = r["create_time"] if r else ""
+                            if ct:
+                                from datetime import datetime, timezone
+                                try:
+                                    # Grok 时间格式: 2026-04-28T03:41:08.260755Z
+                                    dt = datetime.fromisoformat(ct.replace("Z", "+00:00"))
+                                    age_hours = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+                                    if age_hours > 24:
+                                        permanent = True  # 老 asset + 空 body → 已确认丢失
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                    log_db.finish_download(
+                        job["id"], error=err_str, permanent=permanent,
+                        max_attempts=8 if empty_err else 5,  # 空 body 给更多机会
+                        base_backoff_seconds=120.0 if empty_err else 30.0,  # 空 body 退避更长
+                    )
+                    if permanent and asset_id:
+                        log_db.mark_asset_unavailable(asset_id, reason=err_str[:200])
 
         await asyncio.gather(*[_do(j) for j in jobs])
 
@@ -423,17 +427,17 @@ async def _file_delete_worker() -> None:
             continue
 
         async def _do(job: dict) -> None:
-            settings = settings_store.get()
             aid = job["asset_id"]
-            try:
-                confirmed = await delete_grok_asset(settings, aid)
-                # confirmed=True：API 200 → 写 cloud_deleted_at；
-                # confirmed=False：404/410 → 不写（避免误标），让全量同步校准
-                if confirmed:
-                    log_db.mark_asset_cloud_deleted(aid)
-                log_db.finish_delete(job["id"])
-            except Exception as exc:
-                log_db.finish_delete(job["id"], error=str(exc))
+            with account_pool.acquire() as _del_acq:
+                try:
+                    confirmed = await delete_grok_asset(_del_acq.settings, aid)
+                    # confirmed=True：API 200 → 写 cloud_deleted_at；
+                    # confirmed=False：404/410 → 不写（避免误标），让全量同步校准
+                    if confirmed:
+                        log_db.mark_asset_cloud_deleted(aid)
+                    log_db.finish_delete(job["id"])
+                except Exception as exc:
+                    log_db.finish_delete(job["id"], error=str(exc))
 
         await asyncio.gather(*[_do(j) for j in jobs])
 
@@ -464,40 +468,41 @@ async def _files_auto_sync_loop() -> None:
             queued_ids: list[str] = []
             pages = 0
             try:
-                for _ in range(5):
-                    data = await list_grok_assets(settings, page_token=page_token, page_size=100)
-                    assets = data.get("assets", []) or []
-                    if not assets:
-                        break
-                    log_db.upsert_grok_assets(assets)  # auto-sync: 不消费 revived 计数
-                    downloaded = log_db.get_downloaded_asset_ids()
-                    unavailable = log_db.get_unavailable_asset_ids()
-                    jobs = []
-                    ext_map = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
-                               "image/gif": ".gif", "video/mp4": ".mp4", "video/webm": ".webm"}
-                    for a in assets:
-                        aid = a.get("assetId") or ""
-                        if not aid or aid in downloaded or aid in unavailable:
-                            continue
-                        mime = a.get("mimeType", "")
-                        ext = ext_map.get(mime) or (("." + mime.split("/")[1]) if mime else "")
-                        jobs.append({
-                            "id": str(uuid.uuid4()),
-                            "asset_key": a.get("key", ""),
-                            "filename": aid + ext,
-                            "size_bytes": int(a.get("sizeBytes") or 0),
-                            "created_at": time.time(),
-                        })
-                        queued_ids.append(aid)
-                    if jobs:
-                        log_db.add_file_downloads(jobs)
-                        _file_dl_wake.set()
-                    pages += 1
-                    _auto_sync_state["last_pages_scanned"] = pages
-                    _auto_sync_state["last_queued_count"] = len(queued_ids)
-                    page_token = data.get("nextPageToken", "") or ""
-                    if not page_token:
-                        break
+                with account_pool.acquire() as _auto_sync_acq:
+                    for _ in range(5):
+                        data = await list_grok_assets(_auto_sync_acq.settings, page_token=page_token, page_size=100)
+                        assets = data.get("assets", []) or []
+                        if not assets:
+                            break
+                        log_db.upsert_grok_assets(assets)  # auto-sync: 不消费 revived 计数
+                        downloaded = log_db.get_downloaded_asset_ids()
+                        unavailable = log_db.get_unavailable_asset_ids()
+                        jobs = []
+                        ext_map = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp",
+                                   "image/gif": ".gif", "video/mp4": ".mp4", "video/webm": ".webm"}
+                        for a in assets:
+                            aid = a.get("assetId") or ""
+                            if not aid or aid in downloaded or aid in unavailable:
+                                continue
+                            mime = a.get("mimeType", "")
+                            ext = ext_map.get(mime) or (("." + mime.split("/")[1]) if mime else "")
+                            jobs.append({
+                                "id": str(uuid.uuid4()),
+                                "asset_key": a.get("key", ""),
+                                "filename": aid + ext,
+                                "size_bytes": int(a.get("sizeBytes") or 0),
+                                "created_at": time.time(),
+                            })
+                            queued_ids.append(aid)
+                        if jobs:
+                            log_db.add_file_downloads(jobs)
+                            _file_dl_wake.set()
+                        pages += 1
+                        _auto_sync_state["last_pages_scanned"] = pages
+                        _auto_sync_state["last_queued_count"] = len(queued_ids)
+                        page_token = data.get("nextPageToken", "") or ""
+                        if not page_token:
+                            break
             except Exception as exc:
                 _auto_sync_state["last_error"] = str(exc)
                 logger.warning("auto sync: list failed: %s", exc)
@@ -1228,15 +1233,18 @@ async def proxy_grok_asset(
     key = parsed.path.lstrip("/")
     if not key:
         return JSONResponse({"error": "empty asset path"}, status_code=400)
-    try:
-        content_type, gen = await stream_grok_asset(settings, key)
-        return StreamingResponse(gen, media_type=content_type,
-                                 headers={"Cache-Control": "private, max-age=43200"})
-    except GrokClientError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
-    except Exception:
-        logger.exception("proxy_grok_asset failed")
-        return JSONResponse({"error": "Internal server error"}, status_code=500)
+    with account_pool.acquire() as acq:
+        try:
+            content_type, gen = await stream_grok_asset(acq.settings, key)
+            return StreamingResponse(gen, media_type=content_type,
+                                     headers={"Cache-Control": "private, max-age=43200"})
+        except GrokClientError as exc:
+            acq.mark_failure(exc.code or "upstream_5xx")
+            return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
+        except Exception:
+            acq.mark_failure("upstream_5xx")
+            logger.exception("proxy_grok_asset failed")
+            return JSONResponse({"error": "Internal server error"}, status_code=500)
 
 
 @app.get("/v1/grok-files/", tags=[_TAG_FILES], summary="列出本地已下载 Grok 文件（DB 优先，filesystem 兜底）",
@@ -1381,58 +1389,59 @@ async def grok_full_sync(settings: Annotated[Settings, Depends(_settings)]) -> J
             })
             seen_ids: set[str] = set()
             try:
-                page_token = ""
-                pages = 0
-                MAX_PAGES = 200  # 安全上限：~10000 个 asset
-                while pages < MAX_PAGES:
-                    data = await list_grok_assets(settings, page_token=page_token, page_size=100)
-                    assets = data.get("assets", []) or []
-                    if not assets:
-                        break
-                    new_n, upd_n, rev_n = log_db.upsert_grok_assets(assets)
-                    _sync_state["new_count"] += new_n
-                    _sync_state["updated_count"] += upd_n
-                    _sync_state["revived_count"] += rev_n
-                    for a in assets:
-                        aid = a.get("assetId") or ""
-                        if aid:
-                            seen_ids.add(aid)
-                    pages += 1
-                    _sync_state["progress"] = pages
-                    page_token = data.get("nextPageToken", "") or ""
-                    if not page_token:
-                        break
-                _sync_state["total_pages"] = pages
-                _sync_state["scanned_asset_ids"] = len(seen_ids)
-                # 跑完一遍全量后，DB 里仍标 cloud_deleted_at 的若出现在本轮 listing → 之前误标，统一清空
-                # 注意：upsert_grok_assets 已经在每页清掉 cloud_deleted_at；这里做兜底校验防止任何漏网
-                if seen_ids:
-                    try:
-                        ids_list = list(seen_ids)
-                        BATCH = 500  # SQLite 变量上限保护
-                        stale_total = 0
-                        with log_db._connect() as conn:
-                            for i in range(0, len(ids_list), BATCH):
-                                chunk = ids_list[i:i + BATCH]
-                                ph = ",".join("?" * len(chunk))
-                                cur = conn.execute(
-                                    f"SELECT COUNT(*) FROM grok_assets"
-                                    f" WHERE cloud_deleted_at IS NOT NULL AND asset_id IN ({ph})",
-                                    chunk,
-                                )
-                                n = cur.fetchone()[0] or 0
-                                if n:
-                                    conn.execute(
-                                        f"UPDATE grok_assets SET cloud_deleted_at=NULL"
+                with account_pool.acquire() as _sync_acq:
+                    page_token = ""
+                    pages = 0
+                    MAX_PAGES = 200  # 安全上限：~10000 个 asset
+                    while pages < MAX_PAGES:
+                        data = await list_grok_assets(_sync_acq.settings, page_token=page_token, page_size=100)
+                        assets = data.get("assets", []) or []
+                        if not assets:
+                            break
+                        new_n, upd_n, rev_n = log_db.upsert_grok_assets(assets)
+                        _sync_state["new_count"] += new_n
+                        _sync_state["updated_count"] += upd_n
+                        _sync_state["revived_count"] += rev_n
+                        for a in assets:
+                            aid = a.get("assetId") or ""
+                            if aid:
+                                seen_ids.add(aid)
+                        pages += 1
+                        _sync_state["progress"] = pages
+                        page_token = data.get("nextPageToken", "") or ""
+                        if not page_token:
+                            break
+                    _sync_state["total_pages"] = pages
+                    _sync_state["scanned_asset_ids"] = len(seen_ids)
+                    # 跑完一遍全量后，DB 里仍标 cloud_deleted_at 的若出现在本轮 listing → 之前误标，统一清空
+                    # 注意：upsert_grok_assets 已经在每页清掉 cloud_deleted_at；这里做兜底校验防止任何漏网
+                    if seen_ids:
+                        try:
+                            ids_list = list(seen_ids)
+                            BATCH = 500  # SQLite 变量上限保护
+                            stale_total = 0
+                            with log_db._connect() as conn:
+                                for i in range(0, len(ids_list), BATCH):
+                                    chunk = ids_list[i:i + BATCH]
+                                    ph = ",".join("?" * len(chunk))
+                                    cur = conn.execute(
+                                        f"SELECT COUNT(*) FROM grok_assets"
                                         f" WHERE cloud_deleted_at IS NOT NULL AND asset_id IN ({ph})",
                                         chunk,
                                     )
-                                stale_total += n
-                            if stale_total:
-                                logger.info("full sync: cleared cloud_deleted_at on %d stale records", stale_total)
-                            _sync_state["stale_deleted_count"] = stale_total
-                    except Exception as exc:
-                        logger.warning("full sync stale-deleted reconcile failed: %s", exc)
+                                    n = cur.fetchone()[0] or 0
+                                    if n:
+                                        conn.execute(
+                                            f"UPDATE grok_assets SET cloud_deleted_at=NULL"
+                                            f" WHERE cloud_deleted_at IS NOT NULL AND asset_id IN ({ph})",
+                                            chunk,
+                                        )
+                                    stale_total += n
+                                if stale_total:
+                                    logger.info("full sync: cleared cloud_deleted_at on %d stale records", stale_total)
+                                _sync_state["stale_deleted_count"] = stale_total
+                        except Exception as exc:
+                            logger.warning("full sync stale-deleted reconcile failed: %s", exc)
             except Exception as exc:
                 _sync_state["error"] = str(exc)
                 logger.exception("grok full sync failed")
@@ -1637,39 +1646,42 @@ async def videos_generate(
     import uuid as _uuid
     session_id = str(_uuid.uuid4())
     video_id: str | None = None
-    try:
-        video_id = await create_video(
-            settings,
-            prompt=prompt_text,
-            aspect_ratio=aspect_ratio,
-            duration=duration_sec,
-            resolution=resolution,
-            session_id=session_id,
-            model_label="grok-imagine-video",
-        )
-    except GrokClientError as exc:
-        msg = str(exc)
-        if exc.body:
-            logger.error("video generate error body: %s", exc.body)
-            msg = f"{msg} | upstream: {exc.body}"
-        monitor.record_failure(exc.status_code, str(exc), cloudflare=exc.code == "cloudflare_challenge")
-        log_db.log_video(
-            request_id=rid, model="grok-imagine-video", prompt=prompt_text,
-            session_id=session_id, aspect_ratio=aspect_ratio,
-            duration_sec=duration_sec, resolution=resolution, source="api",
-            status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
-        )
-        return _error_response(msg, exc.status_code, code=exc.code or "upstream_error")
-    except Exception as exc:
-        logger.exception("video generation failed")
-        monitor.record_failure(500, str(exc))
-        log_db.log_video(
-            request_id=rid, model="grok-imagine-video", prompt=prompt_text,
-            session_id=session_id, aspect_ratio=aspect_ratio,
-            duration_sec=duration_sec, resolution=resolution, source="api",
-            status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
-        )
-        return _error_response("Internal server error", 500)
+    with account_pool.acquire(model_id="grok-imagine-video") as acq:
+        try:
+            video_id = await create_video(
+                acq.settings,
+                prompt=prompt_text,
+                aspect_ratio=aspect_ratio,
+                duration=duration_sec,
+                resolution=resolution,
+                session_id=session_id,
+                model_label="grok-imagine-video",
+            )
+        except GrokClientError as exc:
+            msg = str(exc)
+            if exc.body:
+                logger.error("video generate error body: %s", exc.body)
+                msg = f"{msg} | upstream: {exc.body}"
+            acq.mark_failure(exc.code or "upstream_5xx")
+            monitor.record_failure(exc.status_code, str(exc), cloudflare=exc.code == "cloudflare_challenge")
+            log_db.log_video(
+                request_id=rid, model="grok-imagine-video", prompt=prompt_text,
+                session_id=session_id, aspect_ratio=aspect_ratio,
+                duration_sec=duration_sec, resolution=resolution, source="api",
+                status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+            )
+            return _error_response(msg, exc.status_code, code=exc.code or "upstream_error")
+        except Exception as exc:
+            acq.mark_failure("upstream_5xx")
+            logger.exception("video generation failed")
+            monitor.record_failure(500, str(exc))
+            log_db.log_video(
+                request_id=rid, model="grok-imagine-video", prompt=prompt_text,
+                session_id=session_id, aspect_ratio=aspect_ratio,
+                duration_sec=duration_sec, resolution=resolution, source="api",
+                status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+            )
+            return _error_response("Internal server error", 500)
     monitor.record_success()
     log_db.log_video(
         request_id=rid, model="grok-imagine-video", prompt=prompt_text,
@@ -1693,13 +1705,16 @@ async def video_status(
     settings: Annotated[Settings, Depends(_settings)],
 ) -> JSONResponse:
     """轮询视频生成状态，ready=true 时返回 download_url。"""
-    try:
-        media_url = await get_video_link(settings, video_id)
-    except GrokClientError as exc:
-        return _error_response(str(exc), exc.status_code, code=exc.code or "upstream_error")
-    except Exception:
-        logger.exception("video status check failed")
-        return _error_response("Internal server error", 500)
+    with account_pool.acquire(model_id="grok-imagine-video") as acq:
+        try:
+            media_url = await get_video_link(acq.settings, video_id)
+        except GrokClientError as exc:
+            acq.mark_failure(exc.code or "upstream_5xx")
+            return _error_response(str(exc), exc.status_code, code=exc.code or "upstream_error")
+        except Exception:
+            acq.mark_failure("upstream_5xx")
+            logger.exception("video status check failed")
+            return _error_response("Internal server error", 500)
     if media_url:
         return JSONResponse({"ready": True, "video_id": video_id, "download_url": media_url})
     return JSONResponse({"ready": False, "video_id": video_id})
@@ -1842,78 +1857,81 @@ async def chat_completions(
         # 流式 tool_call 增量（delta arguments）是 follow-up 任务，暂不实现。
         if has_tools:
             async def generate_tools_as_stream() -> AsyncGenerator[str, None]:
-                try:
-                    content = await complete_chat(settings, message=prompt, mode_id=spec.mode_id)
-                    tc = parse_tool_call(content)
-                    if tc is not None:
-                        # tool_call 分支：整段以单 chunk 发出（finish_reason=tool_calls）
-                        tool_name = tc["name"]
-                        tool_args = tc.get("arguments", {})
-                        args_str = json.dumps(tool_args, ensure_ascii=False) if not isinstance(tool_args, str) else tool_args
-                        delta: dict[str, Any] = {
-                            "role": "assistant",
-                            "content": None,
-                            "tool_calls": [
-                                {
-                                    "index": 0,
-                                    "id": f"call_{secrets.token_hex(12)}",
-                                    "type": "function",
-                                    "function": {"name": tool_name, "arguments": args_str},
-                                }
-                            ],
-                        }
-                        chunk: dict[str, Any] = {
-                            "id": rid,
-                            "object": "chat.completion.chunk",
-                            "created": int(time.time()),
-                            "model": req.model,
-                            "system_fingerprint": "fp_xgate",
-                            "choices": [{"index": 0, "delta": delta, "logprobs": None, "finish_reason": "tool_calls"}],
-                        }
-                        yield sse_data(chunk)
-                        if include_usage:
-                            yield sse_data(stream_usage_chunk(rid, req.model, prompt, content))
-                        yield "data: [DONE]\n\n"
-                        monitor.record_success()
+                with account_pool.acquire(model_id=req.model) as acq:
+                    try:
+                        content = await complete_chat(acq.settings, message=prompt, mode_id=spec.mode_id)
+                        tc = parse_tool_call(content)
+                        if tc is not None:
+                            # tool_call 分支：整段以单 chunk 发出（finish_reason=tool_calls）
+                            tool_name = tc["name"]
+                            tool_args = tc.get("arguments", {})
+                            args_str = json.dumps(tool_args, ensure_ascii=False) if not isinstance(tool_args, str) else tool_args
+                            delta: dict[str, Any] = {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": f"call_{secrets.token_hex(12)}",
+                                        "type": "function",
+                                        "function": {"name": tool_name, "arguments": args_str},
+                                    }
+                                ],
+                            }
+                            chunk: dict[str, Any] = {
+                                "id": rid,
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": req.model,
+                                "system_fingerprint": "fp_xgate",
+                                "choices": [{"index": 0, "delta": delta, "logprobs": None, "finish_reason": "tool_calls"}],
+                            }
+                            yield sse_data(chunk)
+                            if include_usage:
+                                yield sse_data(stream_usage_chunk(rid, req.model, prompt, content))
+                            yield "data: [DONE]\n\n"
+                            monitor.record_success()
+                            log_db.log_chat(
+                                request_id=rid, model=req.model, prompt=prompt,
+                                response=content,
+                                status="success", duration_ms=int((time.monotonic() - t0) * 1000),
+                            )
+                        else:
+                            # 普通 content 分支，走标准流式输出
+                            finish_reason = "stop"
+                            if max_out is not None and max(1, len(content) // 4) >= max_out:
+                                finish_reason = "length"
+                                content = content[: max_out * 4]
+                            yield sse_data(stream_chunk(rid, req.model, content, role="assistant"))
+                            yield sse_data(stream_chunk(rid, req.model, "", finish_reason=finish_reason, role=None))
+                            if include_usage:
+                                yield sse_data(stream_usage_chunk(rid, req.model, prompt, content))
+                            yield "data: [DONE]\n\n"
+                            monitor.record_success()
+                            log_db.log_chat(
+                                request_id=rid, model=req.model, prompt=prompt,
+                                response=content,
+                                status="success", duration_ms=int((time.monotonic() - t0) * 1000),
+                            )
+                    except GrokClientError as exc:
+                        code = exc.code or "upstream_error"
+                        acq.mark_failure(code)
+                        monitor.record_failure(exc.status_code, str(exc), cloudflare=code == "cloudflare_challenge")
                         log_db.log_chat(
                             request_id=rid, model=req.model, prompt=prompt,
-                            response=content,
-                            status="success", duration_ms=int((time.monotonic() - t0) * 1000),
+                            status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
                         )
-                    else:
-                        # 普通 content 分支，走标准流式输出
-                        finish_reason = "stop"
-                        if max_out is not None and max(1, len(content) // 4) >= max_out:
-                            finish_reason = "length"
-                            content = content[: max_out * 4]
-                        yield sse_data(stream_chunk(rid, req.model, content, role="assistant"))
-                        yield sse_data(stream_chunk(rid, req.model, "", finish_reason=finish_reason, role=None))
-                        if include_usage:
-                            yield sse_data(stream_usage_chunk(rid, req.model, prompt, content))
+                        yield sse_error(str(exc), error_type="api_error", code=code)
                         yield "data: [DONE]\n\n"
-                        monitor.record_success()
+                    except Exception as exc:
+                        acq.mark_failure("upstream_5xx")
+                        monitor.record_failure(500, str(exc))
                         log_db.log_chat(
                             request_id=rid, model=req.model, prompt=prompt,
-                            response=content,
-                            status="success", duration_ms=int((time.monotonic() - t0) * 1000),
+                            status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
                         )
-                except GrokClientError as exc:
-                    code = exc.code or "upstream_error"
-                    monitor.record_failure(exc.status_code, str(exc), cloudflare=code == "cloudflare_challenge")
-                    log_db.log_chat(
-                        request_id=rid, model=req.model, prompt=prompt,
-                        status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
-                    )
-                    yield sse_error(str(exc), error_type="api_error", code=code)
-                    yield "data: [DONE]\n\n"
-                except Exception as exc:
-                    monitor.record_failure(500, str(exc))
-                    log_db.log_chat(
-                        request_id=rid, model=req.model, prompt=prompt,
-                        status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
-                    )
-                    yield sse_error(str(exc))
-                    yield "data: [DONE]\n\n"
+                        yield sse_error(str(exc))
+                        yield "data: [DONE]\n\n"
 
             return StreamingResponse(
                 generate_tools_as_stream(),
@@ -1927,61 +1945,64 @@ async def chat_completions(
             first_chunk = True
             # max_out 是目标 token 数；用 4 字符≈1 token 的粗估转成字符上限
             char_budget = max_out * 4 if max_out is not None else None
-            try:
-                async for delta in stream_chat(settings, message=prompt, mode_id=spec.mode_id):
-                    if delta.done:
-                        break
-                    piece = delta.content
-                    if char_budget is not None:
-                        emitted = sum(len(c) for c in chunks)
-                        remaining = char_budget - emitted
-                        if remaining <= 0:
-                            finish_reason = "length"
+            with account_pool.acquire(model_id=req.model) as acq:
+                try:
+                    async for delta in stream_chat(acq.settings, message=prompt, mode_id=spec.mode_id):
+                        if delta.done:
                             break
-                        if len(piece) > remaining:
-                            piece = piece[:remaining]
-                            chunks.append(piece)
-                            yield sse_data(stream_chunk(
-                                rid, req.model, piece,
-                                role="assistant" if first_chunk else None,
-                            ))
-                            finish_reason = "length"
-                            break
-                    chunks.append(piece)
-                    yield sse_data(stream_chunk(
-                        rid, req.model, piece,
-                        role="assistant" if first_chunk else None,
-                    ))
-                    first_chunk = False
-                yield sse_data(stream_chunk(rid, req.model, "", finish_reason=finish_reason, role=None))
-                if include_usage:
-                    yield sse_data(stream_usage_chunk(rid, req.model, prompt, "".join(chunks)))
-                yield "data: [DONE]\n\n"
-                monitor.record_success()
-                logger.info("chat: model=%s done stream=True in %.1fs chunks=%d",
-                            req.model, time.monotonic() - t0, len(chunks))
-                log_db.log_chat(
-                    request_id=rid, model=req.model, prompt=prompt,
-                    response="".join(chunks),
-                    status="success", duration_ms=int((time.monotonic() - t0) * 1000),
-                )
-            except GrokClientError as exc:
-                code = exc.code or "upstream_error"
-                monitor.record_failure(exc.status_code, str(exc), cloudflare=code == "cloudflare_challenge")
-                log_db.log_chat(
-                    request_id=rid, model=req.model, prompt=prompt,
-                    status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
-                )
-                yield sse_error(str(exc), error_type="api_error", code=code)
-                yield "data: [DONE]\n\n"
-            except Exception as exc:
-                monitor.record_failure(500, str(exc))
-                log_db.log_chat(
-                    request_id=rid, model=req.model, prompt=prompt,
-                    status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
-                )
-                yield sse_error(str(exc))
-                yield "data: [DONE]\n\n"
+                        piece = delta.content
+                        if char_budget is not None:
+                            emitted = sum(len(c) for c in chunks)
+                            remaining = char_budget - emitted
+                            if remaining <= 0:
+                                finish_reason = "length"
+                                break
+                            if len(piece) > remaining:
+                                piece = piece[:remaining]
+                                chunks.append(piece)
+                                yield sse_data(stream_chunk(
+                                    rid, req.model, piece,
+                                    role="assistant" if first_chunk else None,
+                                ))
+                                finish_reason = "length"
+                                break
+                        chunks.append(piece)
+                        yield sse_data(stream_chunk(
+                            rid, req.model, piece,
+                            role="assistant" if first_chunk else None,
+                        ))
+                        first_chunk = False
+                    yield sse_data(stream_chunk(rid, req.model, "", finish_reason=finish_reason, role=None))
+                    if include_usage:
+                        yield sse_data(stream_usage_chunk(rid, req.model, prompt, "".join(chunks)))
+                    yield "data: [DONE]\n\n"
+                    monitor.record_success()
+                    logger.info("chat: model=%s done stream=True in %.1fs chunks=%d",
+                                req.model, time.monotonic() - t0, len(chunks))
+                    log_db.log_chat(
+                        request_id=rid, model=req.model, prompt=prompt,
+                        response="".join(chunks),
+                        status="success", duration_ms=int((time.monotonic() - t0) * 1000),
+                    )
+                except GrokClientError as exc:
+                    code = exc.code or "upstream_error"
+                    acq.mark_failure(code)
+                    monitor.record_failure(exc.status_code, str(exc), cloudflare=code == "cloudflare_challenge")
+                    log_db.log_chat(
+                        request_id=rid, model=req.model, prompt=prompt,
+                        status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+                    )
+                    yield sse_error(str(exc), error_type="api_error", code=code)
+                    yield "data: [DONE]\n\n"
+                except Exception as exc:
+                    acq.mark_failure("upstream_5xx")
+                    monitor.record_failure(500, str(exc))
+                    log_db.log_chat(
+                        request_id=rid, model=req.model, prompt=prompt,
+                        status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+                    )
+                    yield sse_error(str(exc))
+                    yield "data: [DONE]\n\n"
 
         return StreamingResponse(
             generate(),
@@ -1991,24 +2012,27 @@ async def chat_completions(
 
     rid = response_id()
     t0 = time.monotonic()
-    try:
-        content = await complete_chat(settings, message=prompt, mode_id=spec.mode_id)
-    except GrokClientError as exc:
-        code = exc.code or "upstream_error"
-        monitor.record_failure(exc.status_code, str(exc), cloudflare=code == "cloudflare_challenge")
-        log_db.log_chat(
-            request_id=rid, model=req.model, prompt=prompt,
-            status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
-        )
-        return _error_response(str(exc), exc.status_code, code=code)
-    except Exception as exc:
-        logger.exception("chat completion failed")
-        monitor.record_failure(500, str(exc))
-        log_db.log_chat(
-            request_id=rid, model=req.model, prompt=prompt,
-            status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
-        )
-        return _error_response("Internal server error", 500)
+    with account_pool.acquire(model_id=req.model) as acq:
+        try:
+            content = await complete_chat(acq.settings, message=prompt, mode_id=spec.mode_id)
+        except GrokClientError as exc:
+            code = exc.code or "upstream_error"
+            acq.mark_failure(code)
+            monitor.record_failure(exc.status_code, str(exc), cloudflare=code == "cloudflare_challenge")
+            log_db.log_chat(
+                request_id=rid, model=req.model, prompt=prompt,
+                status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+            )
+            return _error_response(str(exc), exc.status_code, code=code)
+        except Exception as exc:
+            acq.mark_failure("upstream_5xx")
+            logger.exception("chat completion failed")
+            monitor.record_failure(500, str(exc))
+            log_db.log_chat(
+                request_id=rid, model=req.model, prompt=prompt,
+                status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+            )
+            return _error_response("Internal server error", 500)
 
     logger.info("chat: model=%s done stream=False in %.1fs len=%d",
                 req.model, time.monotonic() - t0, len(content))
@@ -2517,7 +2541,10 @@ def _parse_effort_limits(d: dict | None) -> dict | None:
 
 
 async def _fetch_quota(settings: Settings, mode_name: str = "auto") -> dict | None:
-    """POST /rest/rate-limits for a mode, return parsed quota or None."""
+    """POST /rest/rate-limits for a mode, return parsed quota or None.
+
+    注意：此函数接受 settings 参数，由调用方（通过 account_pool.acquire()）传入影子 settings。
+    """
     try:
         body = await query_rate_limits(settings, model_name=mode_name)
         remaining = body.get("remainingQueries")
@@ -2561,23 +2588,24 @@ async def chat_quota(settings: Annotated[Settings, Depends(_settings)]) -> JSONR
     if not specs:
         return JSONResponse({"chat_quotas": []})
 
-    async def _one(spec: ModelSpec) -> dict:
-        base = {"model_id": spec.model_id, "mode_id": spec.mode_id, "label": spec.name}
-        try:
-            d = await query_rate_limits(settings, model_name=spec.mode_id)
-            remaining = int(d.get("remainingQueries") or 0)
-            total = int(d.get("totalQueries") or remaining)
-            window = int(d.get("windowSizeSeconds") or 7200)
-            used = max(total - remaining, 0)
-            pct = round(used / total * 100, 1) if total > 0 else 0.0
-            logger.info("quota/chat: %s (mode=%s) remaining=%d/%d used=%.1f%%",
-                        spec.model_id, spec.mode_id, remaining, total, pct)
-            return {**base, "remaining": remaining, "total": total,
-                    "used": used, "used_pct": pct, "window_seconds": window}
-        except Exception as exc:
-            return {**base, "error": str(exc)}
+    with account_pool.acquire() as acq:
+        async def _one(spec: ModelSpec) -> dict:
+            base = {"model_id": spec.model_id, "mode_id": spec.mode_id, "label": spec.name}
+            try:
+                d = await query_rate_limits(acq.settings, model_name=spec.mode_id)
+                remaining = int(d.get("remainingQueries") or 0)
+                total = int(d.get("totalQueries") or remaining)
+                window = int(d.get("windowSizeSeconds") or 7200)
+                used = max(total - remaining, 0)
+                pct = round(used / total * 100, 1) if total > 0 else 0.0
+                logger.info("quota/chat: %s (mode=%s) remaining=%d/%d used=%.1f%%",
+                            spec.model_id, spec.mode_id, remaining, total, pct)
+                return {**base, "remaining": remaining, "total": total,
+                        "used": used, "used_pct": pct, "window_seconds": window}
+            except Exception as exc:
+                return {**base, "error": str(exc)}
 
-    out = await asyncio.gather(*[_one(s) for s in specs])
+        out = await asyncio.gather(*[_one(s) for s in specs])
     return JSONResponse({"chat_quotas": list(out)})
 
 
@@ -2590,7 +2618,8 @@ async def chat_quota(settings: Annotated[Settings, Depends(_settings)]) -> JSONR
           ),
           dependencies=[Depends(_require_api_key)])
 async def image_quota(settings: Annotated[Settings, Depends(_settings)]) -> JSONResponse:
-    result = await query_image_rate_limits(settings)
+    with account_pool.acquire() as acq:
+        result = await query_image_rate_limits(acq.settings)
     valid = [c for c in result["candidates"] if "remaining" in c]
     result["best"] = valid[0] if valid else None
     return JSONResponse(result)
@@ -2621,57 +2650,60 @@ async def chat_imagine_endpoint(
     sess_id = str(uuid.uuid4())
     t0 = time.monotonic()
     summary = ""
-    try:
-        urls, summary = await chat_imagine(
-            settings, message=req.prompt, mode_id=req.mode_id,
-            image_count=req.image_count, aspect_ratio=req.aspect_ratio,
-        )
-    except GrokClientError as exc:
-        log_db.log_image(
-            request_id=sess_id, model=req.mode_id, prompt=req.prompt,
-            image_count=0, aspect_ratio="", source="chat-imagine",
-            status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
-        )
-        return _error_response(str(exc), exc.status_code, code=exc.code or "upstream_error")
-    except Exception as exc:
-        logger.exception("chat-imagine failed")
-        log_db.log_image(
-            request_id=sess_id, model=req.mode_id, prompt=req.prompt,
-            image_count=0, aspect_ratio="", source="chat-imagine",
-            status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
-        )
-        return _error_response("Internal server error", 500)
-    full = []
-    for u in urls:
-        if u.startswith("http"):
-            full.append(u)
-        else:
-            full.append(f"https://assets.grok.com/{u.lstrip('/')}")
-    # 落盘到 data/images/{sess_id}/，让"图库"能扫到这个 session
-    from .grok_client import _init_session as _grok_init_session, stream_grok_asset
-    saved_paths: list[str] = []
-    try:
-        sess_dir = _grok_init_session(
-            sess_id, prompt=req.prompt, source="chat-imagine", aspect_ratio="",
-        )
-        for idx, full_url in enumerate(full):
-            try:
-                m = re.search(r"assets\.grok\.com/(.+)$", full_url)
-                if not m:
-                    continue
-                key = m.group(1)
-                ext = os.path.splitext(key.split("/")[-1])[1] or ".jpg"
-                fn = f"chat-{idx:02d}{ext}"
-                fp = sess_dir / fn
-                _ct, gen = await stream_grok_asset(settings, key)
-                with open(fp, "wb") as f:
-                    async for chunk in gen:
-                        f.write(chunk)
-                saved_paths.append(f"{sess_id}/{fn}")
-            except Exception as save_exc:
-                logger.warning("chat-imagine save failed for %s: %s", full_url[:100], save_exc)
-    except Exception:
-        logger.exception("chat-imagine session_dir / download failed")
+    with account_pool.acquire(model_id=req.mode_id) as acq:
+        try:
+            urls, summary = await chat_imagine(
+                acq.settings, message=req.prompt, mode_id=req.mode_id,
+                image_count=req.image_count, aspect_ratio=req.aspect_ratio,
+            )
+        except GrokClientError as exc:
+            acq.mark_failure(exc.code or "upstream_5xx")
+            log_db.log_image(
+                request_id=sess_id, model=req.mode_id, prompt=req.prompt,
+                image_count=0, aspect_ratio="", source="chat-imagine",
+                status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+            )
+            return _error_response(str(exc), exc.status_code, code=exc.code or "upstream_error")
+        except Exception as exc:
+            acq.mark_failure("upstream_5xx")
+            logger.exception("chat-imagine failed")
+            log_db.log_image(
+                request_id=sess_id, model=req.mode_id, prompt=req.prompt,
+                image_count=0, aspect_ratio="", source="chat-imagine",
+                status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+            )
+            return _error_response("Internal server error", 500)
+        full = []
+        for u in urls:
+            if u.startswith("http"):
+                full.append(u)
+            else:
+                full.append(f"https://assets.grok.com/{u.lstrip('/')}")
+        # 落盘到 data/images/{sess_id}/，让"图库"能扫到这个 session
+        from .grok_client import _init_session as _grok_init_session, stream_grok_asset
+        saved_paths: list[str] = []
+        try:
+            sess_dir = _grok_init_session(
+                sess_id, prompt=req.prompt, source="chat-imagine", aspect_ratio="",
+            )
+            for idx, full_url in enumerate(full):
+                try:
+                    m = re.search(r"assets\.grok\.com/(.+)$", full_url)
+                    if not m:
+                        continue
+                    key = m.group(1)
+                    ext = os.path.splitext(key.split("/")[-1])[1] or ".jpg"
+                    fn = f"chat-{idx:02d}{ext}"
+                    fp = sess_dir / fn
+                    _ct, gen = await stream_grok_asset(acq.settings, key)
+                    with open(fp, "wb") as f:
+                        async for chunk in gen:
+                            f.write(chunk)
+                    saved_paths.append(f"{sess_id}/{fn}")
+                except Exception as save_exc:
+                    logger.warning("chat-imagine save failed for %s: %s", full_url[:100], save_exc)
+        except Exception:
+            logger.exception("chat-imagine session_dir / download failed")
     log_db.log_image(
         request_id=sess_id, model=req.mode_id, prompt=req.prompt,
         image_paths=saved_paths or full, image_count=len(full),
@@ -2699,9 +2731,10 @@ async def quota_check(settings: Annotated[Settings, Depends(_settings)]) -> JSON
 
     import asyncio, time as _time
     t0 = _time.monotonic()
-    results = await asyncio.gather(*[
-        _fetch_quota(settings, mode) for mode in _QUOTA_MODES
-    ])
+    with account_pool.acquire() as acq:
+        results = await asyncio.gather(*[
+            _fetch_quota(acq.settings, mode) for mode in _QUOTA_MODES
+        ])
     quotas = {r["mode"]: r for r in results if r}
 
     # 用 auto 模式判断是否超限 90%
@@ -2888,20 +2921,22 @@ async def admin_models_verify(
     mode_id = req.mode_id
     if not mode_id.strip():
         raise HTTPException(status_code=400, detail="mode_id 不能为空")
-    try:
-        raw = await query_rate_limits(settings, model_name=mode_id.strip())
-        remaining = raw.get("remainingQueries")
-        total = raw.get("totalQueries")
-        wait = raw.get("waitTimeSeconds")
-        return JSONResponse({
-            "ok": True,
-            "mode_id": mode_id,
-            "remaining": remaining,
-            "total": total,
-            "wait_seconds": wait,
-        })
-    except Exception as e:
-        return JSONResponse({"ok": False, "mode_id": mode_id, "error": str(e)})
+    with account_pool.acquire() as acq:
+        try:
+            raw = await query_rate_limits(acq.settings, model_name=mode_id.strip())
+            remaining = raw.get("remainingQueries")
+            total = raw.get("totalQueries")
+            wait = raw.get("waitTimeSeconds")
+            return JSONResponse({
+                "ok": True,
+                "mode_id": mode_id,
+                "remaining": remaining,
+                "total": total,
+                "wait_seconds": wait,
+            })
+        except Exception as e:
+            acq.mark_failure("upstream_5xx")
+            return JSONResponse({"ok": False, "mode_id": mode_id, "error": str(e)})
 
 
 class _ModelsUpdateRequest(BaseModel):
@@ -2960,7 +2995,9 @@ async def admin_dashboard(settings: Annotated[Settings, Depends(_settings)]) -> 
     for s in chat_specs:
         if s.mode_id not in seen_modes:
             seen_modes[s.mode_id] = s
-    quota_results = await asyncio.gather(*[_fetch_quota(settings, mid) for mid in seen_modes])
+    with account_pool.acquire() as acq:
+        quota_results = await asyncio.gather(*[_fetch_quota(acq.settings, mid) for mid in seen_modes])
+        img_quota_result = await query_image_rate_limits(acq.settings)
     model_quotas: list[dict] = []
     for (mode_id, spec), q in zip(seen_modes.items(), quota_results):
         if q:
@@ -2980,7 +3017,6 @@ async def admin_dashboard(settings: Annotated[Settings, Depends(_settings)]) -> 
         key=lambda t: t.get("priority", 999),
     )[:8]
     snap = monitor.snapshot()
-    img_quota_result = await query_image_rate_limits(settings)
     img_quota_valid = [c for c in img_quota_result["candidates"] if "remaining" in c]
     image_quota = img_quota_valid[0] if img_quota_valid else None
     return JSONResponse({
@@ -3013,17 +3049,20 @@ async def grok_assets_list(
     page_token: str = "",
     page_size: int = 50,
 ) -> JSONResponse:
-    try:
-        data = await list_grok_assets(settings, page_token=page_token, page_size=min(page_size, 100))
-        # 顺便缓存到本地 DB（增量发现）
-        if data.get("assets"):
-            log_db.upsert_grok_assets(data["assets"])
-        return JSONResponse(data)
-    except GrokClientError as exc:
-        return _error_response(str(exc), exc.status_code, code=exc.code or "upstream_error")
-    except Exception:
-        logger.exception("grok assets list failed")
-        return _error_response("Internal server error", 500)
+    with account_pool.acquire() as acq:
+        try:
+            data = await list_grok_assets(acq.settings, page_token=page_token, page_size=min(page_size, 100))
+            # 顺便缓存到本地 DB（增量发现）
+            if data.get("assets"):
+                log_db.upsert_grok_assets(data["assets"])
+            return JSONResponse(data)
+        except GrokClientError as exc:
+            acq.mark_failure(exc.code or "upstream_5xx")
+            return _error_response(str(exc), exc.status_code, code=exc.code or "upstream_error")
+        except Exception:
+            acq.mark_failure("upstream_5xx")
+            logger.exception("grok assets list failed")
+            return _error_response("Internal server error", 500)
 
 
 @app.post("/v1/grok/assets/{asset_id}/delete", tags=[_TAG_FILES], summary="删除 Grok File",
@@ -3033,16 +3072,19 @@ async def grok_asset_delete(
     asset_id: str,
     settings: Annotated[Settings, Depends(_settings)],
 ) -> JSONResponse:
-    try:
-        confirmed = await delete_grok_asset(settings, asset_id)
-        if confirmed:
-            log_db.mark_asset_cloud_deleted(asset_id)  # 仅在 API 200 后才标记
-        return JSONResponse({"ok": True, "cloud_deleted": confirmed})
-    except GrokClientError as exc:
-        return _error_response(str(exc), exc.status_code, code=exc.code or "upstream_error")
-    except Exception:
-        logger.exception("grok asset delete failed")
-        return _error_response("Internal server error", 500)
+    with account_pool.acquire() as acq:
+        try:
+            confirmed = await delete_grok_asset(acq.settings, asset_id)
+            if confirmed:
+                log_db.mark_asset_cloud_deleted(asset_id)  # 仅在 API 200 后才标记
+            return JSONResponse({"ok": True, "cloud_deleted": confirmed})
+        except GrokClientError as exc:
+            acq.mark_failure(exc.code or "upstream_5xx")
+            return _error_response(str(exc), exc.status_code, code=exc.code or "upstream_error")
+        except Exception:
+            acq.mark_failure("upstream_5xx")
+            logger.exception("grok asset delete failed")
+            return _error_response("Internal server error", 500)
 
 
 @app.get("/v1/grok/assets/download", tags=[_TAG_FILES], summary="下载 Grok File",
@@ -3067,20 +3109,23 @@ async def grok_asset_download(
     # 防御：拒绝 prompt:// / scheme:// 等伪 key（LLM 透传产物或意外字符串）
     if "://" in key or key.startswith("prompt:") or key.startswith("/"):
         return JSONResponse({"error": "invalid key format"}, status_code=400)
-    try:
-        content_type, gen = await stream_grok_asset(settings, key)
-        headers: dict[str, str] = {
-            "Cache-Control": "private, max-age=43200",  # 12h，与 Grok CDN 一致
-        }
-        if not inline:
-            safe_name = filename.replace('"', "_")
-            headers["Content-Disposition"] = f'attachment; filename="{safe_name}"'
-        return StreamingResponse(gen, media_type=content_type, headers=headers)
-    except GrokClientError as exc:
-        return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
-    except Exception:
-        logger.exception("grok asset download failed")
-        return JSONResponse({"error": "Internal server error"}, status_code=500)
+    with account_pool.acquire() as acq:
+        try:
+            content_type, gen = await stream_grok_asset(acq.settings, key)
+            headers: dict[str, str] = {
+                "Cache-Control": "private, max-age=43200",  # 12h，与 Grok CDN 一致
+            }
+            if not inline:
+                safe_name = filename.replace('"', "_")
+                headers["Content-Disposition"] = f'attachment; filename="{safe_name}"'
+            return StreamingResponse(gen, media_type=content_type, headers=headers)
+        except GrokClientError as exc:
+            acq.mark_failure(exc.code or "upstream_5xx")
+            return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
+        except Exception:
+            acq.mark_failure("upstream_5xx")
+            logger.exception("grok asset download failed")
+            return JSONResponse({"error": "Internal server error"}, status_code=500)
 
 
 class _SaveBatchItem(BaseModel):
@@ -3103,19 +3148,20 @@ async def grok_assets_save_local(
     saved = []
     skipped = []
     errors = []
-    for item in req.files:
-        try:
-            path, was_skipped = await save_grok_asset_local(settings, item.key, item.filename, item.size_bytes)
-            entry = {"key": item.key, "filename": item.filename, "path": path}
-            if was_skipped:
-                skipped.append(entry)
-            else:
-                saved.append(entry)
-        except GrokClientError as exc:
-            errors.append({"key": item.key, "filename": item.filename, "error": str(exc)})
-        except Exception:
-            logger.exception("save local asset failed: key=%s", item.key)
-            errors.append({"key": item.key, "filename": item.filename, "error": "Internal server error"})
+    with account_pool.acquire() as acq:
+        for item in req.files:
+            try:
+                path, was_skipped = await save_grok_asset_local(acq.settings, item.key, item.filename, item.size_bytes)
+                entry = {"key": item.key, "filename": item.filename, "path": path}
+                if was_skipped:
+                    skipped.append(entry)
+                else:
+                    saved.append(entry)
+            except GrokClientError as exc:
+                errors.append({"key": item.key, "filename": item.filename, "error": str(exc)})
+            except Exception:
+                logger.exception("save local asset failed: key=%s", item.key)
+                errors.append({"key": item.key, "filename": item.filename, "error": "Internal server error"})
     return JSONResponse({"saved": saved, "skipped": skipped, "errors": errors})
 
 
