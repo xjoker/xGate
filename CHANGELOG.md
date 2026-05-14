@@ -7,8 +7,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-14
+
 ### Added
-- **MCP Streamable HTTP 接入**（`/mcp`）：将 Grok 网页能力暴露为 9 个 MCP tool，
+- **多账号池（Phase 1 + 2）**：
+  - `accounts.AccountPool` 凭证 + 运行时状态持久化到 SQLite
+  - 选号策略：priority asc + LRU；soft_cooldown（quota 剩余 < 5% 自动避让）
+  - 故障决策表：rate_limit / cf_challenge / unauthorized / 5xx 各自 cooldown 时长
+  - 上游 `retry-after` / `x-ratelimit-reset-*` 解析，分级 cooldown（minute / hour / day）
+  - 后台 quota poll loop（5min 一轮）+ auto_disabled re-validate loop（30min 探活）
+  - 0-账号兜底：mini.toml 的 `grok.cookie` 自动 import 为 default 账号
+  - admin/config 改凭证字段时自动同步 default 账号（保留 enabled/priority/weight）
+  - Monitor 按 account_label 分桶；4 张日志表加 `account_label` 列（ALTER 幂等迁移）
+- **OpenAI 兼容增强**：
+  - `tools` / `tool_choice` 单轮 function calling（prompt 注入 + 响应解析）
+  - 多轮 `role=tool` 消息正确翻译（含 tool_call_id → name 反查）
+  - `tiktoken` 精确 token 估算（替代 `len // 4`），CL100K base encoder
+- **认证体验**：
+  - sliding session（剩余 TTL < 50% 自动续期）
+  - 401 reason codes（`session_missing` / `session_revoked` / `api_key_invalid`）
+  - 前端登录失效提示按 code 分类显示
+  - admin/accounts CRUD endpoints + 设置页账号管理面板（增/删/启用禁用/cURL 导入）
+- **REST API**：
+  - `GET /admin/accounts` 列出账号 + `POST /admin/accounts` 增删
+  - `POST /admin/accounts/import-curl` 从 cURL 创建新账号
+  - `GET /v1/logs?account_label=...` 按账号过滤日志
+  - `/admin/dashboard` 增加 `accounts` + `monitor.per_account` 字段
+- **配置**：
+  - `[server] cookie_secure`（auto/always/never）
+  - `[grok] statsig_id`（HAR/cURL 导入自动抓取）
+  - `[grok] disable_ssl_verify`（默认 False，应急用）
+- GitHub Actions CI（pytest 自动跑）
+
+### Changed
+- `grok_client._ws_connect` / `ws_gateway` / `get_video_link` 默认启用 SSL 校验
+  （Round 1 SAST：之前无条件 `ssl=False` 让上行 Cookie 暴露于 MitM）
+- `/v1/quota/chat` `/v1/quota/image` `/v1/quota` `/admin/models/verify`
+  `/admin/dashboard` 5 个 GET endpoint 改为 POST（CSRF 防护）
+- 文件接口（`/v1/files/image` `/v1/files/video` `/v1/grok-files/{fn}`）改用
+  HMAC signed URL（`?sig=...&exp=...`），1h TTL；老 URL 仍兼容（warning + 放行）
+- `/v1/files/proxy` 保留 GET（浏览器 img 需要）但 cookie 通道强制 same-origin Referer
+- secure cookie 标志改为启动一次性判定（按 `cookie_secure` 配置 + `public_base_url`）
+- SameSite=Strict → Lax（避免外部链接跳入丢 cookie）
+- SQLite 路径绝对化（基于项目根，systemd / Docker WorkingDir 变化不丢数据）
+- `/docs` `/redoc` `/openapi.json` 自定义路由 + `_require_api_key` 鉴权
+- 测试用例修复 + 大幅扩充：125 → 256 passed
+- DELETE 500 响应不再回显原始异常
+
+### Fixed
+- **空 / 默认 `api_key` 启动 hard fail**（非 127.0.0.1 绑定 → SystemExit）
+- **登录偶尔被踢出**（reverse-proxy / HSTS 切换导致 secure 标志抖动）
+- 登录 24h 硬过期（无 sliding 续期）
+- MCP `_BearerAuthMiddleware` `==` 比较 → `secrets.compare_digest`（消除时序攻击）
+- 前端 `_parseMd` Markdown 图片 + `openVideoModal` URL 协议白名单（防 `javascript:` XSS）
+- `esc()` helper 加单引号转义（一处修复多处受益）
+- `python-multipart` 升 0.0.27+（CVE: DoS via unbounded multipart headers）
+- `tests/test_auth.py` 全红（引用旧内存版 session）→ 迁移到 SQLite `revoke_all`
+
+### Security
+- 启动校验：弱 api_key + 公网绑定 → 拒绝启动
+- mini.toml 权限警告（POSIX 0o077 任意位可读 → logger.warning）
+- 401 reason code 不泄露内部状态（合并 expired 和 revoked 为同一信号）
+
+## [0.1.x] - 2026-04 / 05
+
+详见各 patch commit（0.1.1 - 0.1.5）：MCP Streamable HTTP（9 tools）、HttpOnly Cookie 鉴权、
+WebUI 重构（创作 / 资产 / 对话 / 媒体）、动态模型注册表、Dashboard、配额查询、access log 脱敏、
+按模型配额面板、日志分页、详细日志、模型 ID 修复等。
+
+<details>
+<summary>0.1.x 累计变更摘要</summary>
+
+- **MCP Streamable HTTP 接入**（`/mcp`）：9 个 tool（grok_chat / x_search / web_search /
   兼容 Claude Desktop / Cursor / Cline 等所有支持 MCP 2025-06-18 spec 的客户端
   - `grok_chat`：多轮对话，支持自动续轮、富格式 / OpenAI 兼容双输出、X/web 搜索结果内嵌
   - `grok_x_search`：X 高级搜索（含时间范围、最小互动数、媒体类型等 15+ 过滤参数），返回原始推文结构
@@ -38,16 +108,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   浏览器前端切到 cookie 通道并启用 CSRF Double Submit 校验
 - access log 脱敏 filter：自动把 `?api_key=` query / `Authorization` header /
   `x-api-key` header 里的值替换为 `***`
+- 移除 `/v1/grok/assets/download` query 鉴权通道，浏览器走 HttpOnly cookie
+- 模型注册表加 OpenAI 占位字段、`images/generations` 拒绝 `b64_json`
 
-### Changed
-- 模型注册表（`/v1/models`）增加 `permission` / `root` / `parent` 占位字段以提升 SDK 兼容度
-- `images/generations` 显式拒绝 `response_format=b64_json`，返回 `unsupported_parameter`
-
-### Security
-- **移除 `/v1/grok/assets/download` 的 `?api_key=xxx` query 鉴权通道**：消除 access log /
-  DevTools / 截图 / 浏览器历史泄露 api_key 的路径，前端浏览器改走 HttpOnly cookie，
-  其它客户端继续用 `Authorization: Bearer` / `X-Api-Key` Header
-- 前端不再把 api_key 写入 `localStorage` / DOM URL，统一由 cookie 持有
+</details>
 
 ## [0.1.0] - 2026-04-28
 
