@@ -513,5 +513,6 @@ def _minimal_settings(account: Account) -> "Settings":
     return _as_settings(base, account)
 
 
-# ── 全局单例占位（main.py lifespan 内赋值）─────────────────────────────────────
-account_pool: AccountPool  # 类型声明；实际值在 lifespan 内 set
+# ── 全局单例 ──────────────────────────────────────────────────────────────────
+# 模块级实例化；main.py lifespan 会调 import_from_settings() 完成兜底导入。
+account_pool: AccountPool = AccountPool()

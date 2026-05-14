@@ -170,7 +170,7 @@ monitor = Monitor()
 ws_gateway = WsGateway()
 image_stream_worker = ImageStreamWorker()
 task_queue = TaskQueue()
-account_pool: AccountPool = AccountPool()  # 全局单例，lifespan 内 import_from_settings 完成初始化
+# account_pool 单例由 accounts 模块持有，此处不再重复构造（避免命名空间分裂）
 _mcp_app = create_mcp_app(settings_store.get)
 
 
@@ -3199,7 +3199,7 @@ class _AccountImportCurlRequest(BaseModel):
          dependencies=[Depends(_require_api_key)])
 async def admin_list_accounts() -> JSONResponse:
     accounts = account_pool.list_accounts()
-    return JSONResponse({"accounts": [a.to_dict() for a in accounts]})
+    return JSONResponse({"accounts": [asdict(a) for a in accounts]})
 
 
 @app.post("/admin/accounts", tags=[_TAG_ADMIN], summary="新增 / 更新 Grok 账号",

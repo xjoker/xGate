@@ -49,9 +49,9 @@ def _headers() -> dict:
 
 
 def _setup_pool() -> None:
-    """清空账号池，确保测试隔离。"""
-    with account_pool._lock:
-        account_pool._accounts.clear()
+    """清空账号池，确保测试隔离（用公开 API 删每一行）。"""
+    for info in account_pool.list_accounts():
+        account_pool.delete_account(info.label)
 
 
 class AdminAccountsTests(unittest.TestCase):
