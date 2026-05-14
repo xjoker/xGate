@@ -2,11 +2,39 @@
 
 from __future__ import annotations
 
+import logging
 import secrets
 import time
+from functools import lru_cache
 from typing import Any
 
 import orjson
+
+logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _get_encoder():
+    """加载 tiktoken 编码器（cl100k_base），失败时返回 None。"""
+    try:
+        import tiktoken
+        return tiktoken.get_encoding("cl100k_base")
+    except Exception as e:
+        logger.warning("tiktoken unavailable, falling back to len/4: %s", e)
+        return None
+
+
+def count_tokens(text: str) -> int:
+    """用 tiktoken 计算 token 数；tiktoken 不可用时退化为 len(text)//4。"""
+    if not text:
+        return 0
+    enc = _get_encoder()
+    if enc is None:
+        return max(1, len(text) // 4)
+    try:
+        return len(enc.encode(text))
+    except Exception:
+        return max(1, len(text) // 4)
 
 # 静态 system_fingerprint：OpenAI 用它标识同一份模型权重 + 后端配置。
 # 我们没有真正的版本指纹，给一个稳定常量足以让 SDK 解析通过。
@@ -20,7 +48,7 @@ def response_id() -> str:
 def estimate_tokens(text: str | None) -> int:
     if not text:
         return 0
-    return max(1, len(text) // 4)
+    return count_tokens(text)
 
 
 def usage(prompt: str, completion: str) -> dict:
