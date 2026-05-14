@@ -17,12 +17,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .db import DB_PATH as _DB_PATH
+
 SESSION_COOKIE = "xgate_session"
 CSRF_COOKIE = "xgate_csrf"
 CSRF_HEADER = "x-csrf-token"
 DEFAULT_TTL_SECONDS = 24 * 3600
-
-_DB_PATH = Path("./data/file/xgate.db")
 
 
 @dataclass(frozen=True, slots=True)

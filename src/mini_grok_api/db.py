@@ -10,14 +10,18 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_DATA_DIR = Path("./data/file")
+# 使用 __file__ 锚定项目根目录，避免 systemd/Docker 切换工作目录时读到错误位置的 db。
+# 目录结构：src/mini_grok_api/db.py → 向上 3 级 = 项目根目录
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_DATA_DIR = _PROJECT_ROOT / "data" / "file"
 DB_PATH = _DATA_DIR / "xgate.db"
 
 
 class LogDB:
     def __init__(self, path: Path = DB_PATH) -> None:
-        self._path = path
+        self._path = path.resolve()
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        logger.info("xgate db path: %s", self._path)
         self._init()
 
     def _connect(self) -> sqlite3.Connection:
