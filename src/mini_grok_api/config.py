@@ -19,6 +19,12 @@ _DEFAULT_UA = (
     "(KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36"
 )
 
+# 浏览器端 Statsig SDK 生成的 fingerprint，服务端无法动态生成，作为兜底默认值
+_DEFAULT_STATSIG_ID = (
+    "ZTpUeXBlRXJyb3I6IENhbm5vdCByZWFkIHByb3BlcnRpZXMgb2YgdW5kZWZpbmVkIChyZWFkaW5nICdjaGls"
+    "ZE5vZGVzJyk="
+)
+
 # 首次运行（TOML 中无 [[models.chat]] 时）使用的默认模型列表
 DEFAULT_CHAT_MODELS: tuple[dict, ...] = (
     # Chat 模型（modeId 对应 grok.com 内部路由）
@@ -40,6 +46,7 @@ class Settings:
     api_key: str
     grok_cookie: str
     grok_user_agent: str
+    grok_statsig_id: str
     grok_browser: str
     grok_proxy: str
     grok_timeout_seconds: float
@@ -99,6 +106,7 @@ def load_settings() -> Settings:
         api_key=_str(data, "auth.api_key", "change-me"),
         grok_cookie=_str(data, "grok.cookie", ""),
         grok_user_agent=_str(data, "grok.user_agent", _DEFAULT_UA),
+        grok_statsig_id=_str(data, "grok.statsig_id", ""),
         grok_browser=_str(data, "grok.browser", "chrome142"),
         grok_proxy=_str(data, "grok.proxy", ""),
         grok_timeout_seconds=_float(data, "grok.timeout_seconds", 120.0),
@@ -133,6 +141,7 @@ def save_settings(settings: Settings, path: Path = CONFIG_PATH) -> None:
             "[grok]",
             f"cookie = {json.dumps(settings.grok_cookie, ensure_ascii=False)}",
             f"user_agent = {json.dumps(settings.grok_user_agent, ensure_ascii=False)}",
+            f"statsig_id = {json.dumps(settings.grok_statsig_id, ensure_ascii=False)}",
             f"browser = {json.dumps(settings.grok_browser, ensure_ascii=False)}",
             f"proxy = {json.dumps(settings.grok_proxy, ensure_ascii=False)}",
             f"timeout_seconds = {settings.grok_timeout_seconds}",

@@ -21,6 +21,7 @@ class CurlImportResult:
     url: str
     headers: dict[str, str]
     body: str
+    statsig_id: str = ""
 
 
 def parse_grok_curl(command: str, *, max_chars: int = 256_000) -> CurlImportResult:
@@ -83,6 +84,7 @@ def parse_grok_curl(command: str, *, max_chars: int = 256_000) -> CurlImportResu
 
     cookie = _sanitize_cookie(headers.get("cookie") or cookie)
     user_agent = (headers.get("user-agent") or "").strip()
+    statsig_id = (headers.get("x-statsig-id") or "").strip()
     if not _is_grok_url(url):
         raise CurlImportError("cURL URL 必须是 grok.com")
     if not cookie:
@@ -97,6 +99,7 @@ def parse_grok_curl(command: str, *, max_chars: int = 256_000) -> CurlImportResu
         url=url,
         headers=headers,
         body=body,
+        statsig_id=statsig_id,
     )
 
 

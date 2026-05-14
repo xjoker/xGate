@@ -2666,11 +2666,14 @@ async def import_curl(curl_text: Annotated[str, Form()]) -> JSONResponse:
         monitor.record_failure(exc.status_code, str(exc), cloudflare=is_cf)
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
 
-    settings_store.update(
-        grok_cookie=result.cookie,
-        grok_user_agent=result.user_agent,
-        grok_browser=result.browser,
-    )
+    update_kwargs: dict[str, object] = {
+        "grok_cookie": result.cookie,
+        "grok_user_agent": result.user_agent,
+        "grok_browser": result.browser,
+    }
+    if result.statsig_id:
+        update_kwargs["grok_statsig_id"] = result.statsig_id
+    settings_store.update(**update_kwargs)
     monitor.record_success(int(smoke["status_code"]))
     return JSONResponse({"ok": True, "message": f"cURL 导入和冒烟成功，状态码 {smoke['status_code']}。"})
 

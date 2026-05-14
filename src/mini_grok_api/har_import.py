@@ -19,6 +19,7 @@ class HarImportResult:
     user_agent: str
     browser: str
     source_url: str
+    statsig_id: str = ""
 
 
 def parse_grok_har(raw: bytes, *, max_bytes: int = 25 * 1024 * 1024) -> HarImportResult:
@@ -33,7 +34,7 @@ def parse_grok_har(raw: bytes, *, max_bytes: int = 25 * 1024 * 1024) -> HarImpor
     if not isinstance(entries, list):
         raise HarImportError("HAR 缺少 log.entries")
 
-    best: tuple[int, str, str, str] | None = None
+    best: tuple[int, str, str, str, str] | None = None
     fallback_user_agent = ""
     fallback_url = ""
     for entry in entries:
@@ -52,13 +53,14 @@ def parse_grok_har(raw: bytes, *, max_bytes: int = 25 * 1024 * 1024) -> HarImpor
         if not cookie:
             continue
         user_agent = user_agent or fallback_user_agent
+        statsig_id = headers.get("x-statsig-id") or ""
         score = _score_entry(url, cookie, user_agent)
         if best is None or score > best[0]:
-            best = (score, cookie, user_agent, url)
+            best = (score, cookie, user_agent, url, statsig_id)
 
     if best is None:
         raise HarImportError("未在 HAR 中找到 grok.com 请求 Cookie")
-    _score, cookie, user_agent, source_url = best
+    _score, cookie, user_agent, source_url, statsig_id = best
     if not user_agent:
         raise HarImportError("未在 HAR 中找到 User-Agent")
 
@@ -67,6 +69,7 @@ def parse_grok_har(raw: bytes, *, max_bytes: int = 25 * 1024 * 1024) -> HarImpor
         user_agent=user_agent.strip(),
         browser=browser_from_user_agent(user_agent),
         source_url=source_url or fallback_url,
+        statsig_id=statsig_id,
     )
 
 

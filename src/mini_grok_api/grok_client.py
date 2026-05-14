@@ -18,14 +18,12 @@ from urllib.parse import urlparse
 import aiohttp
 from curl_cffi.requests import AsyncSession
 
-from .config import Settings
+from .config import Settings, _DEFAULT_STATSIG_ID
 
 logger = logging.getLogger(__name__)
 
 CHAT_URL = "https://grok.com/rest/app-chat/conversations/new"
 _RATE_LIMITS_URL = "https://grok.com/rest/rate-limits"
-# TODO: x-statsig-id / baggage 当前硬编码，理论上有被指纹识别风险
-#       Grok web 端每个请求生成不同值。后续重构成动态生成。
 SKILLS_URL = "https://grok.com/rest/skills"
 WS_IMAGINE_URL = "wss://grok.com/ws/imagine/listen"
 
@@ -493,10 +491,6 @@ def _contains_cloudflare_challenge(status_code: int, body: str) -> bool:
     )
 
 
-_STATSIG_ID = (
-    "ZTpUeXBlRXJyb3I6IENhbm5vdCByZWFkIHByb3BlcnRpZXMgb2YgdW5kZWZpbmVkIChyZWFkaW5nICdjaGls"
-    "ZE5vZGVzJyk="
-)
 _BAGGAGE = (
     "sentry-environment=production,"
     "sentry-release=d6add6fb0460641fd482d767a335ef72b9b6abb8,"
@@ -578,7 +572,7 @@ def _headers(settings: Settings) -> dict[str, str]:
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",
         "User-Agent": settings.grok_user_agent,
-        "x-statsig-id": _STATSIG_ID,
+        "x-statsig-id": settings.grok_statsig_id or _DEFAULT_STATSIG_ID,
         "x-xai-request-id": str(uuid.uuid4()),
         "Cookie": settings.grok_cookie,
     }
