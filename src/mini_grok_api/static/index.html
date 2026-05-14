@@ -1372,6 +1372,84 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
     </div>
   </div>
 
+  <!-- 全宽：账号管理 -->
+  <div class="settings-section full-width">
+    <h2>账号管理</h2>
+    <div class="settings-card" style="padding:0;overflow:hidden">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--border-subtle);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:13px;color:var(--fg-muted);flex:1">账号池支持多账号轮询调度，配置 Cookie 后自动参与请求分发。</span>
+        <button class="btn btn-outline btn-sm" onclick="accountsShowAddModal()">+ 添加账号</button>
+        <button class="btn btn-outline btn-sm" onclick="accountsShowImportCurlModal()">+ 从 cURL 导入</button>
+      </div>
+      <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead>
+            <tr style="background:var(--bg-subtle)">
+              <th style="padding:8px 12px;text-align:left;font-weight:600;border-bottom:1px solid var(--border-subtle);white-space:nowrap">Label</th>
+              <th style="padding:8px 12px;text-align:center;font-weight:600;border-bottom:1px solid var(--border-subtle);white-space:nowrap">Priority</th>
+              <th style="padding:8px 12px;text-align:center;font-weight:600;border-bottom:1px solid var(--border-subtle);white-space:nowrap">Weight</th>
+              <th style="padding:8px 12px;text-align:left;font-weight:600;border-bottom:1px solid var(--border-subtle);white-space:nowrap">状态</th>
+              <th style="padding:8px 12px;text-align:left;font-weight:600;border-bottom:1px solid var(--border-subtle);white-space:nowrap">最近使用</th>
+              <th style="padding:8px 12px;text-align:left;font-weight:600;border-bottom:1px solid var(--border-subtle);white-space:nowrap">Cookie (掩码)</th>
+              <th style="padding:8px 12px;border-bottom:1px solid var(--border-subtle)"></th>
+            </tr>
+          </thead>
+          <tbody id="accounts-tbody">
+            <tr><td colspan="7" style="padding:20px;text-align:center;color:var(--fg-muted);font-size:13px">加载中…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- 添加账号 Modal -->
+  <div id="account-add-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center">
+    <div style="background:var(--bg-card);border-radius:var(--radius-lg);padding:24px;max-width:480px;width:calc(100% - 40px);box-shadow:var(--shadow-lg)">
+      <h3 style="font-size:15px;font-weight:700;margin-bottom:16px">添加账号</h3>
+      <div class="field" style="margin-bottom:10px">
+        <label class="field-label">Label（唯一标识）</label>
+        <input type="text" id="acc-add-label" placeholder="例：main / backup-1" style="width:100%;padding:8px 10px;border:1px solid var(--border-md);border-radius:var(--radius);background:var(--bg);font-size:13px">
+      </div>
+      <div class="field" style="margin-bottom:10px">
+        <label class="field-label">Cookie</label>
+        <textarea id="acc-add-cookie" rows="3" placeholder="粘贴完整 Cookie 字符串" style="width:100%;padding:8px 10px;border:1px solid var(--border-md);border-radius:var(--radius);background:var(--bg);font-size:12px;font-family:var(--font-mono);resize:vertical"></textarea>
+      </div>
+      <div class="field-row" style="margin-bottom:10px;gap:10px;display:flex">
+        <div class="field" style="flex:1"><label class="field-label">Priority</label><input type="number" id="acc-add-priority" value="1" min="1" style="width:100%;padding:8px 10px;border:1px solid var(--border-md);border-radius:var(--radius);background:var(--bg);font-size:13px"></div>
+        <div class="field" style="flex:1"><label class="field-label">Weight</label><input type="number" id="acc-add-weight" value="10" min="1" style="width:100%;padding:8px 10px;border:1px solid var(--border-md);border-radius:var(--radius);background:var(--bg);font-size:13px"></div>
+      </div>
+      <div id="acc-add-result" style="font-size:13px;margin-bottom:10px;display:none"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-outline btn-sm" onclick="accountsHideModals()">取消</button>
+        <button class="btn btn-primary btn-sm" onclick="accountsDoAdd()">添加</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 从 cURL 导入账号 Modal -->
+  <div id="account-curl-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:1000;align-items:center;justify-content:center">
+    <div style="background:var(--bg-card);border-radius:var(--radius-lg);padding:24px;max-width:520px;width:calc(100% - 40px);box-shadow:var(--shadow-lg)">
+      <h3 style="font-size:15px;font-weight:700;margin-bottom:16px">从 cURL 导入账号</h3>
+      <div class="field" style="margin-bottom:10px">
+        <label class="field-label">Label（唯一标识）</label>
+        <input type="text" id="acc-curl-label" placeholder="例：account-2" style="width:100%;padding:8px 10px;border:1px solid var(--border-md);border-radius:var(--radius);background:var(--bg);font-size:13px">
+      </div>
+      <div class="field" style="margin-bottom:10px">
+        <label class="field-label">cURL 命令</label>
+        <textarea id="acc-curl-text" rows="5" placeholder="curl 'https://grok.com/...' ..." style="width:100%;padding:8px 10px;border:1px solid var(--border-md);border-radius:var(--radius);background:var(--bg);font-size:12px;font-family:var(--font-mono);resize:vertical"></textarea>
+      </div>
+      <div class="field-row" style="margin-bottom:10px;gap:10px;display:flex">
+        <div class="field" style="flex:1"><label class="field-label">Priority</label><input type="number" id="acc-curl-priority" value="1" min="1" style="width:100%;padding:8px 10px;border:1px solid var(--border-md);border-radius:var(--radius);background:var(--bg);font-size:13px"></div>
+        <div class="field" style="flex:1"><label class="field-label">Weight</label><input type="number" id="acc-curl-weight" value="10" min="1" style="width:100%;padding:8px 10px;border:1px solid var(--border-md);border-radius:var(--radius);background:var(--bg);font-size:13px"></div>
+      </div>
+      <div id="acc-curl-result" style="font-size:13px;margin-bottom:10px;display:none"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-outline btn-sm" onclick="accountsHideModals()">取消</button>
+        <button class="btn btn-primary btn-sm" onclick="accountsDoImportCurl()">导入</button>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <!-- ═══════════════════ CHAT VIEW ═══════════════════ -->
@@ -1702,7 +1780,7 @@ window.switchView = function(v) {
   });
   if (v === 'home')     { loadHome(); }
   if (v === 'logs')     { loadLogs(0); }
-  if (v === 'settings') { loadStatus(); loadCurrentConfig(); loadModels(); }
+  if (v === 'settings') { loadStatus(); loadCurrentConfig(); loadModels(); loadAccounts(); }
   if (v === 'chat')     { loadChatModels(); }
   if (v === 'files')    { loadFiles(); }
   if (v !== 'generate') stopTaskPoll();
@@ -3061,6 +3139,175 @@ window.modelsSave = async function() {
     loadModels();
   } catch (e) { toast('保存失败: ' + e.message, 'error'); }
 };
+
+// ── Account management ───────────────────────────────────────────────────────
+
+function _accountStatusBadge(status) {
+  const colors = {
+    enabled: '#059669',
+    manually_disabled: '#dc2626',
+    auto_disabled: '#dc2626',
+    cooling: '#d97706',
+  };
+  const labels = {
+    enabled: '启用',
+    manually_disabled: '已禁用',
+    auto_disabled: '自动禁用',
+    cooling: '冷却中',
+  };
+  const color = colors[status] || '#6b6459';
+  const label = labels[status] || status;
+  return `<span style="display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600;color:${color}">
+    <span style="width:6px;height:6px;border-radius:50%;background:${color};display:inline-block"></span>${label}
+  </span>`;
+}
+
+function _accountRelTime(ts) {
+  if (!ts) return '—';
+  const diff = Date.now() / 1000 - ts;
+  if (diff < 60) return '刚刚';
+  if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`;
+  return `${Math.floor(diff / 86400)}天前`;
+}
+
+function _renderAccountsTable(accounts) {
+  const tbody = document.getElementById('accounts-tbody');
+  if (!accounts || !accounts.length) {
+    tbody.innerHTML = '<tr><td colspan="7" style="padding:20px;text-align:center;color:var(--fg-muted);font-size:13px">暂无账号，点击「添加账号」开始配置</td></tr>';
+    return;
+  }
+  tbody.innerHTML = accounts.map(a => {
+    const isEnabled = a.status === 'enabled';
+    const toggleLabel = isEnabled ? '禁用' : '启用';
+    return `<tr style="border-bottom:1px solid var(--border-subtle)">
+      <td style="padding:8px 12px;font-family:var(--font-mono);font-size:12px;font-weight:600">${esc(a.label)}</td>
+      <td style="padding:8px 12px;text-align:center;font-size:13px">${a.priority}</td>
+      <td style="padding:8px 12px;text-align:center;font-size:13px">${a.weight}</td>
+      <td style="padding:8px 12px">${_accountStatusBadge(a.status)}</td>
+      <td style="padding:8px 12px;font-size:12px;color:var(--fg-muted)">${_accountRelTime(a.last_used_at)}</td>
+      <td style="padding:8px 12px;font-family:var(--font-mono);font-size:11px;color:var(--fg-muted);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(a.cookie_masked)}">${esc(a.cookie_masked || '—')}</td>
+      <td style="padding:8px 12px;white-space:nowrap">
+        <div style="display:flex;gap:6px;align-items:center">
+          <button class="btn btn-outline btn-sm" onclick="accountsToggleEnabled(${JSON.stringify(esc(a.label))}, ${!isEnabled})">${toggleLabel}</button>
+          <button class="btn btn-outline btn-sm" style="color:#dc2626;border-color:#fca5a5" onclick="accountsDelete(${JSON.stringify(esc(a.label))})">删除</button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+window.loadAccounts = async function() {
+  try {
+    const d = await api('GET', '/admin/accounts');
+    _renderAccountsTable(d.accounts || []);
+  } catch (e) {
+    const tbody = document.getElementById('accounts-tbody');
+    if (tbody) tbody.innerHTML = `<tr><td colspan="7" style="padding:20px;text-align:center;color:#dc2626;font-size:13px">加载失败: ${esc(e.message)}</td></tr>`;
+  }
+};
+
+window.accountsShowAddModal = function() {
+  document.getElementById('acc-add-label').value = '';
+  document.getElementById('acc-add-cookie').value = '';
+  document.getElementById('acc-add-priority').value = '1';
+  document.getElementById('acc-add-weight').value = '10';
+  const res = document.getElementById('acc-add-result');
+  res.style.display = 'none';
+  document.getElementById('account-add-modal').style.display = 'flex';
+};
+
+window.accountsShowImportCurlModal = function() {
+  document.getElementById('acc-curl-label').value = '';
+  document.getElementById('acc-curl-text').value = '';
+  document.getElementById('acc-curl-priority').value = '1';
+  document.getElementById('acc-curl-weight').value = '10';
+  const res = document.getElementById('acc-curl-result');
+  res.style.display = 'none';
+  document.getElementById('account-curl-modal').style.display = 'flex';
+};
+
+window.accountsHideModals = function() {
+  document.getElementById('account-add-modal').style.display = 'none';
+  document.getElementById('account-curl-modal').style.display = 'none';
+};
+
+window.accountsDoAdd = async function() {
+  const label  = document.getElementById('acc-add-label').value.trim();
+  const cookie = document.getElementById('acc-add-cookie').value.trim();
+  const priority = parseInt(document.getElementById('acc-add-priority').value, 10) || 1;
+  const weight   = parseInt(document.getElementById('acc-add-weight').value, 10) || 10;
+  const res = document.getElementById('acc-add-result');
+  res.style.display = '';
+  res.style.color = 'var(--fg-muted)';
+  res.textContent = '处理中…';
+  if (!label) { res.style.color = '#dc2626'; res.textContent = 'label 不能为空'; return; }
+  if (!cookie) { res.style.color = '#dc2626'; res.textContent = 'cookie 不能为空'; return; }
+  try {
+    await api('POST', '/admin/accounts', { label, cookie, priority, weight });
+    res.style.color = '#059669';
+    res.textContent = '账号已添加';
+    toast('账号已添加', 'success');
+    accountsHideModals();
+    loadAccounts();
+  } catch (e) {
+    res.style.color = '#dc2626';
+    res.textContent = '失败: ' + e.message;
+  }
+};
+
+window.accountsDoImportCurl = async function() {
+  const label    = document.getElementById('acc-curl-label').value.trim();
+  const curl     = document.getElementById('acc-curl-text').value.trim();
+  const priority = parseInt(document.getElementById('acc-curl-priority').value, 10) || 1;
+  const weight   = parseInt(document.getElementById('acc-curl-weight').value, 10) || 10;
+  const res = document.getElementById('acc-curl-result');
+  res.style.display = '';
+  res.style.color = 'var(--fg-muted)';
+  res.textContent = '解析中…';
+  if (!label) { res.style.color = '#dc2626'; res.textContent = 'label 不能为空'; return; }
+  if (!curl) { res.style.color = '#dc2626'; res.textContent = '请粘贴 cURL'; return; }
+  try {
+    const d = await api('POST', '/admin/accounts/import-curl', { curl, label, priority, weight });
+    res.style.color = '#059669';
+    res.textContent = `账号已导入 (browser: ${d.browser || '—'})`;
+    toast('账号从 cURL 导入成功', 'success');
+    accountsHideModals();
+    loadAccounts();
+  } catch (e) {
+    res.style.color = '#dc2626';
+    res.textContent = '失败: ' + e.message;
+  }
+};
+
+window.accountsToggleEnabled = async function(label, enabled) {
+  try {
+    await api('POST', `/admin/accounts/${encodeURIComponent(label)}/enabled`, { enabled });
+    toast(`账号「${label}」已${enabled ? '启用' : '禁用'}`, 'success');
+    loadAccounts();
+  } catch (e) {
+    toast('操作失败: ' + e.message, 'error');
+  }
+};
+
+window.accountsDelete = async function(label) {
+  if (!confirm(`确认删除账号「${label}」？此操作不可恢复。`)) return;
+  try {
+    await api('DELETE', `/admin/accounts/${encodeURIComponent(label)}`);
+    toast(`账号「${label}」已删除`, 'success');
+    loadAccounts();
+  } catch (e) {
+    toast('删除失败: ' + e.message, 'error');
+  }
+};
+
+// 点击 modal 背景关闭
+document.addEventListener('click', function(e) {
+  const addModal  = document.getElementById('account-add-modal');
+  const curlModal = document.getElementById('account-curl-modal');
+  if (e.target === addModal)  accountsHideModals();
+  if (e.target === curlModal) accountsHideModals();
+});
 
 window.importCurl = async function() {
   const text = document.getElementById('curl-text').value.trim();
