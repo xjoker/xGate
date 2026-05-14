@@ -155,14 +155,46 @@ task_queue = TaskQueue()
 _mcp_app = create_mcp_app(settings_store.get)
 
 
+_LOCALHOST_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
+
+# SECURE_COOKIE_FLAG：模块加载时一次性确定，避免每请求抖动。
+# 规则：always→True, never→False, auto→public_base_url 以 https:// 开头时 True。
+def _compute_secure_cookie_flag(s: "Settings") -> bool:
+    mode = (s.cookie_secure or "auto").strip().lower()
+    if mode == "always":
+        return True
+    if mode == "never":
+        return False
+    # auto
+    return s.public_base_url.startswith("https://")
+
+SECURE_COOKIE_FLAG: bool = _compute_secure_cookie_flag(settings_store.get())
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):  # noqa: ARG001
     import asyncio
-    _key = settings_store.get().api_key
+    _s = settings_store.get()
+    _key = _s.api_key
+    _is_weak_key = not _key or _key == "change-me"
+    _is_public_host = _s.server_host not in _LOCALHOST_HOSTS
+    if _is_weak_key and _is_public_host:
+        logger.error(
+            "启动中止：api_key 未设置或仍为默认值 'change-me'，"
+            "且服务监听在公网地址 %s。"
+            "请在 data/config/mini.toml 的 [auth] 节下将 api_key 改为随机强密钥后重启。",
+            _s.server_host,
+        )
+        raise SystemExit(1)
     if not _key:
-        logger.warning("⚠️  api_key 为空，所有接口无需认证——仅限受信任内网使用")
+        logger.warning(
+            "⚠️  api_key 为空，所有接口无需认证——仅限受信任内网使用。"
+            "如需启用认证请在 data/config/mini.toml 的 [auth] 节下设置 api_key。"
+        )
     elif _key == "change-me":
-        logger.warning("⚠️  api_key 使用默认值 'change-me'，请立即修改 data/config/mini.toml")
+        logger.warning(
+            "⚠️  api_key 仍为默认值 'change-me'，请在 data/config/mini.toml 的 [auth] 节下修改 api_key 后重启。"
+        )
     ws_gateway.start(settings_store.get)
     task_queue.start_worker(ws_gateway, log_db=log_db)
     log_db.reset_running_downloads()
@@ -761,17 +793,17 @@ async def health(settings: Annotated[Settings, Depends(_settings)]) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _set_session_cookies(response: Response, request: Request, token: str, csrf: str, max_age: int = 86400) -> None:
-    # Secure 仅在 https 下设置；本地 http 开发不能设 Secure 否则浏览器拒绝写入。
-    secure = (request.url.scheme == "https") or (request.headers.get("x-forwarded-proto") == "https")
+def _set_session_cookies(response: Response, request: Request, token: str, csrf: str, max_age: int = 86400) -> None:  # noqa: ARG001
+    # Secure 标志由启动时一次性计算的 SECURE_COOKIE_FLAG 决定，避免反代/协议切换导致抖动。
+    # SameSite=Lax：CSRF Double-Submit 已足够防御，Strict 会让外部链接跳入丢 cookie（踢出主因之一）。
     response.set_cookie(
-        key=SESSION_COOKIE, value=token, httponly=True, secure=secure,
-        samesite="strict", path="/", max_age=max_age,
+        key=SESSION_COOKIE, value=token, httponly=True, secure=SECURE_COOKIE_FLAG,
+        samesite="lax", path="/", max_age=max_age,
     )
     # CSRF cookie 需要 JS 可读，不设 HttpOnly
     response.set_cookie(
-        key=CSRF_COOKIE, value=csrf, httponly=False, secure=secure,
-        samesite="strict", path="/", max_age=max_age,
+        key=CSRF_COOKIE, value=csrf, httponly=False, secure=SECURE_COOKIE_FLAG,
+        samesite="lax", path="/", max_age=max_age,
     )
 
 
