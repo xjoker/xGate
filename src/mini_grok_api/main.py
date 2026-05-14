@@ -225,6 +225,8 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
     asyncio.create_task(_file_download_worker())
     asyncio.create_task(_file_delete_worker())
     asyncio.create_task(_files_auto_sync_loop())
+    asyncio.create_task(_account_quota_poll_loop())
+    asyncio.create_task(_account_revalidate_loop())
     if settings_store.get().mcp_enabled:
         async with mcp.session_manager.run():
             yield
@@ -681,6 +683,99 @@ async def _session_keeper_loop() -> None:
         await asyncio.sleep(interval)
 
 
+# ── 配额 Poll Loop 常量 ────────────────────────────────────────────────────────
+_QUOTA_POLL_INTERVAL = 300      # 5 分钟一轮（全部账号 × 模型查完后 sleep）
+_QUOTA_POLL_INTER_MODEL = 2     # 同账号内模型间 sleep（秒）
+_QUOTA_POLL_INTER_ACCOUNT = 5   # 跨账号 sleep（秒）
+_REVALIDATE_INTERVAL = 1800     # auto_disabled 重验证间隔（30 分钟）
+
+
+async def _account_quota_poll_loop() -> None:
+    """每 300 秒遍历所有 enabled 账号 × 注册模型，调 query_rate_limits 更新缓存。
+
+    错峰：每个账号之间 sleep 5s，同账号内每个模型间 sleep 2s。
+    失败：捕获异常记日志后跳过，不影响其他账号/模型。
+    image_model 跳过（图片配额由 query_image_rate_limits 处理，key 不同）。
+    """
+    while True:
+        try:
+            specs = [s for s in get_model_specs() if not s.image_model]
+            infos = account_pool.list_accounts()
+            polled = 0
+            for info in infos:
+                if info.status in {"manually_disabled", "auto_disabled"}:
+                    continue
+                if not info.enabled:
+                    continue
+                acc = account_pool.get_account(info.label)
+                if acc is None:
+                    continue
+                shadow = _minimal_settings_for_poll(acc)
+                for spec in specs:
+                    try:
+                        q = await query_rate_limits(shadow, model_name=spec.mode_id)
+                        if q and "remainingQueries" in q:
+                            wait = float(q.get("waitTimeSeconds") or 0)
+                            reset_at = time.time() + wait
+                            account_pool.update_quota(
+                                info.label,
+                                spec.model_id,
+                                remaining=int(q["remainingQueries"]),
+                                total=int(q.get("totalQueries") or 0),
+                                reset_at=reset_at,
+                            )
+                            polled += 1
+                    except Exception as exc:
+                        logger.warning(
+                            "quota poll failed: account=%s model=%s err=%s",
+                            info.label, spec.model_id, exc,
+                        )
+                    await asyncio.sleep(_QUOTA_POLL_INTER_MODEL)
+                await asyncio.sleep(_QUOTA_POLL_INTER_ACCOUNT)
+            if polled:
+                logger.info("quota poll: updated %d account-model quota entries", polled)
+        except Exception:
+            logger.exception("quota poll loop error")
+        await asyncio.sleep(_QUOTA_POLL_INTERVAL)
+
+
+async def _account_revalidate_loop() -> None:
+    """每 30 分钟对 status=auto_disabled 账号做轻量探活。
+
+    用 query_rate_limits 探一次 "auto" 模型，无异常 → re_enable + 清失败计数。
+    manually_disabled 账号不动（用户主动禁用的不自动恢复）。
+    """
+    while True:
+        await asyncio.sleep(_REVALIDATE_INTERVAL)
+        try:
+            infos = account_pool.list_accounts()
+            for info in infos:
+                if info.status != "auto_disabled":
+                    continue
+                acc = account_pool.get_account(info.label)
+                if acc is None:
+                    continue
+                shadow = _minimal_settings_for_poll(acc)
+                try:
+                    q = await query_rate_limits(shadow, model_name="auto")
+                    if q is not None:
+                        account_pool.re_enable(info.label)
+                        logger.info(
+                            "re-validate: account=%s recovered, re-enabled", info.label
+                        )
+                except Exception as exc:
+                    logger.debug(
+                        "re-validate: account=%s still failing: %s", info.label, exc
+                    )
+                await asyncio.sleep(5)
+        except Exception:
+            logger.exception("re-validate loop error")
+
+
+def _minimal_settings_for_poll(acc: "Account") -> Settings:
+    """为后台 poll loop 构造该账号的 Settings（从 settings_store 派生）。"""
+    from .accounts import _as_settings
+    return _as_settings(settings_store.get(), acc)
 
 
 def _settings() -> Settings:
@@ -3199,7 +3294,14 @@ class _AccountImportCurlRequest(BaseModel):
          dependencies=[Depends(_require_api_key)])
 async def admin_list_accounts() -> JSONResponse:
     accounts = account_pool.list_accounts()
-    return JSONResponse({"accounts": [asdict(a) for a in accounts]})
+    # 附加每账号的配额摘要（不破坏现有字段）
+    quota_map = {q["label"]: q["quotas"] for q in account_pool.list_account_quotas()}
+    account_dicts = []
+    for a in accounts:
+        d = asdict(a)
+        d["quota_cache"] = quota_map.get(a.label, {})
+        account_dicts.append(d)
+    return JSONResponse({"accounts": account_dicts})
 
 
 @app.post("/admin/accounts", tags=[_TAG_ADMIN], summary="新增 / 更新 Grok 账号",

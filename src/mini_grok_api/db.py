@@ -230,6 +230,11 @@ class LogDB:
             if "origin" not in tq_cols:
                 try: conn.execute("ALTER TABLE task_queue ADD COLUMN origin TEXT NOT NULL DEFAULT 'queue'")
                 except Exception: pass
+            # accounts 列迁移：quota_cache_json（Phase 2 新增）
+            acc_cols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)").fetchall()}
+            if "quota_cache_json" not in acc_cols:
+                try: conn.execute("ALTER TABLE accounts ADD COLUMN quota_cache_json TEXT NOT NULL DEFAULT '{}'")
+                except Exception: pass
 
     # ── Write ─────────────────────────────────────────────────────────────────
 
