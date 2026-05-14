@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import unittest
 from dataclasses import replace
 
@@ -470,6 +471,39 @@ class LogRedactionTests(unittest.TestCase):
         )
         f.filter(record)
         self.assertNotIn("xkxk-shhh", record.getMessage())
+
+
+class SlidingSessionTests(unittest.TestCase):
+    """SessionStore.touch() sliding 续期逻辑单测。"""
+
+    def setUp(self) -> None:
+        session_store._sessions.clear()
+
+    def test_touch_renews_when_past_half_ttl(self) -> None:
+        """剩余 TTL < 50% 时，touch() 应将 expires_at 延长到 now + ttl。"""
+        sess = session_store.create()
+        # 把 expires_at 模拟到仅剩 1h（< 12h 阈值）
+        remaining_secs = 3600
+        new_exp = time.time() + remaining_secs
+        with session_store._connect() as conn:
+            conn.execute(
+                "UPDATE sessions SET expires_at=? WHERE token=?",
+                (new_exp, sess.token),
+            )
+        touched = session_store.touch(sess.token)
+        assert touched is not None, "touch() 不应返回 None"
+        assert touched.expires_at > new_exp, "touch() 应续期 expires_at"
+        # 新的 expires_at 应接近 now + 24h（允许 5s 误差）
+        expected = time.time() + session_store._ttl
+        assert abs(touched.expires_at - expected) < 5, "续期后应约等于 now + ttl"
+
+    def test_touch_no_renew_when_below_half_ttl(self) -> None:
+        """剩余 TTL > 50% 时，touch() 不应修改 expires_at。"""
+        sess = session_store.create()
+        # 刚创建，剩余 ~24h > 12h 阈值，不应续期
+        touched = session_store.touch(sess.token)
+        assert touched is not None, "touch() 不应返回 None"
+        assert touched.expires_at == sess.expires_at, "未过半时 touch() 不应改变 expires_at"
 
 
 if __name__ == "__main__":

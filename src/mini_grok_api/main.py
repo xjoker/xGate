@@ -208,6 +208,19 @@ app = FastAPI(
 _STATIC_DIR = Path(__file__).parent / "static"
 _STATIC_DIR.mkdir(exist_ok=True)
 
+
+@app.middleware("http")
+async def _sliding_session_middleware(request: Request, call_next):
+    """响应阶段：若 _require_api_key 续期了 session，重发 Set-Cookie 同步浏览器 max_age。"""
+    response = await call_next(request)
+    renewed: "Session | None" = getattr(request.state, "session_renewed", None)
+    if renewed is not None:
+        remaining = renewed.expires_at - time.time()
+        max_age = max(int(remaining), 0)
+        _set_session_cookies(response, request, renewed.token, renewed.csrf, max_age)
+    return response
+
+
 class _MCPAwareApp:
     """Top-level ASGI: /mcp paths → MCP handler (strips prefix, no 307 redirect).
     /mcp/sse + /mcp/messages → SSE transport (for mcp-remote / stdio bridge clients).
@@ -651,6 +664,10 @@ def _require_api_key(
     # 通道 3：HttpOnly Cookie
     sess = session_store.get(xgate_session)
     if sess is not None:
+        # sliding session：touch() 在剩余 TTL < 50% 时续期，并将新 Session 存入 request.state
+        touched = session_store.touch(xgate_session)
+        if touched is not None and touched.expires_at != sess.expires_at:
+            request.state.session_renewed = touched
         method = (request.method or "GET").upper()
         if method in {"GET", "HEAD", "OPTIONS"}:
             return
@@ -854,6 +871,7 @@ async def auth_logout(
 @app.get("/v1/auth/whoami", tags=[_TAG_ADMIN], summary="检查当前 session 是否有效",
          description="供前端启动时探测登录态：有效 cookie 返回 200 + csrf_token；无效返回 401。")
 async def auth_whoami(
+    request: Request,
     xgate_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE)] = None,
 ) -> JSONResponse:
     sess = session_store.get(xgate_session)
@@ -862,7 +880,18 @@ async def auth_whoami(
             error_payload("Not logged in", error_type="authentication_error"),
             status_code=401,
         )
-    return JSONResponse({"ok": True, "csrf_token": sess.csrf, "expires_at": int(sess.expires_at)})
+    # sliding session：whoami 自身也触发续期检查
+    touched = session_store.touch(xgate_session)
+    renewed = touched is not None and touched.expires_at != sess.expires_at
+    if renewed and touched is not None:
+        request.state.session_renewed = touched
+        sess = touched
+    return JSONResponse({
+        "ok": True,
+        "csrf_token": sess.csrf,
+        "expires_at": int(sess.expires_at),
+        "renewed": renewed,
+    })
 
 
 @app.get("/v1/models", tags=[_TAG_OPENAI], summary="列出所有模型",
