@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import sqlite3
 import time
@@ -213,7 +214,8 @@ class AccountPool:
                     last_error_at        REAL    NOT NULL DEFAULT 0,
                     consecutive_failures INTEGER NOT NULL DEFAULT 0,
                     success_count        INTEGER NOT NULL DEFAULT 0,
-                    fail_count           INTEGER NOT NULL DEFAULT 0
+                    fail_count           INTEGER NOT NULL DEFAULT 0,
+                    quota_cache_json     TEXT    NOT NULL DEFAULT '{}'
                 );
                 CREATE INDEX IF NOT EXISTS idx_accounts_priority ON accounts(priority);
                 CREATE INDEX IF NOT EXISTS idx_accounts_status   ON accounts(status);
@@ -253,6 +255,20 @@ class AccountPool:
             # LRU：已是按 last_used_at ASC 排序，取第一个
             return _row_to_account(candidates[0])
 
+    def _pick_candidates(self) -> list[Account]:
+        """返回所有当前可用账号列表（按 priority ASC, last_used_at ASC 排序）。"""
+        now = time.time()
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM accounts"
+                " WHERE enabled=1"
+                "   AND (status='enabled'"
+                "     OR (status='cooling' AND cooldown_until <= ?))"
+                " ORDER BY priority ASC, last_used_at ASC",
+                (now,),
+            ).fetchall()
+        return [_row_to_account(r) for r in rows]
+
     # ── acquire ───────────────────────────────────────────────────────────────
 
     def acquire(
@@ -266,8 +282,28 @@ class AccountPool:
 
         base_settings 为 None 时，settings 字段使用 Account 本身的凭证构造占位 Settings。
         主调方（main.py 等）应传入 settings_store.get() 作为 base。
+
+        若提供 model_id，会跳过该模型配额低于 5% 的账号（soft_cooldown）。
+        若所有账号均 soft_cooling，则回退到不过滤（让上游真 429 兜底）。
         """
-        account = self._pick_account(force_label=force_label)
+        if force_label:
+            account = self._pick_account(force_label=force_label)
+        elif model_id:
+            # soft_cooldown 过滤：跳过配额 < 5% 的账号
+            original_candidates = self._pick_candidates()
+            filtered = [
+                a for a in original_candidates
+                if not self._is_quota_low(a.label, model_id)
+            ]
+            if not filtered and original_candidates:
+                logger.warning(
+                    "all accounts soft_cooling for model=%s, falling back to unfiltered selection",
+                    model_id,
+                )
+                filtered = original_candidates
+            account = filtered[0] if filtered else None
+        else:
+            account = self._pick_account()
 
         if account is None:
             # 0-账号兜底：返回 _settings_fallback（不写 DB）
@@ -299,6 +335,99 @@ class AccountPool:
 
         derived = _as_settings(base_settings, account) if base_settings else _minimal_settings(account)
         return AccountAcquisition(self, account, derived)
+
+    # ── quota cache ───────────────────────────────────────────────────────────
+
+    def update_quota(
+        self,
+        label: str,
+        model_id: str,
+        *,
+        remaining: int,
+        total: int,
+        reset_at: float,
+    ) -> None:
+        """更新某账号某模型的配额缓存（写 DB quota_cache_json 字段）。
+
+        缓存格式：
+        {
+            "grok-4.20-auto": {"remaining": 25, "total": 25,
+                               "reset_at": 1715750000.0, "fetched_at": 1715749700.0},
+            ...
+        }
+        """
+        now = time.time()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT quota_cache_json FROM accounts WHERE label=?", (label,)
+            ).fetchone()
+            if row is None:
+                return
+            try:
+                cache: dict = json.loads(row["quota_cache_json"] or "{}")
+            except Exception:
+                cache = {}
+            cache[model_id] = {
+                "remaining": remaining,
+                "total": total,
+                "reset_at": reset_at,
+                "fetched_at": now,
+            }
+            conn.execute(
+                "UPDATE accounts SET quota_cache_json=? WHERE label=?",
+                (json.dumps(cache, ensure_ascii=False), label),
+            )
+
+    def get_quota(self, label: str, model_id: str) -> dict | None:
+        """读取某账号某模型的配额缓存，无缓存返回 None。"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT quota_cache_json FROM accounts WHERE label=?", (label,)
+            ).fetchone()
+            if row is None:
+                return None
+            try:
+                cache: dict = json.loads(row["quota_cache_json"] or "{}")
+            except Exception:
+                return None
+            return cache.get(model_id)
+
+    def _is_quota_low(self, label: str, model_id: str, threshold: float = 0.05) -> bool:
+        """判断某账号某模型配额是否低于阈值（默认 5%）。
+
+        无缓存时返回 False（不过滤，让流量通过，让上游真 429 兜底）。
+        total <= 0 时同样不过滤。
+        """
+        q = self.get_quota(label, model_id)
+        if q is None:
+            return False
+        total = q.get("total", 0)
+        if total <= 0:
+            return False
+        return (q.get("remaining", 0) / total) < threshold
+
+    # ── re_enable（后台 revalidate 专用）────────────────────────────────────
+
+    def re_enable(self, label: str) -> bool:
+        """将 auto_disabled 账号恢复为 enabled，清零 consecutive_failures 和 cooldown。
+
+        与 set_enabled(label, True) 的区别：不检查 enabled 列，直接更新 status。
+        manually_disabled 账号调用此方法同样有效（不区分来源），调用方应先过滤。
+        返回 True 表示实际发生了更新。
+        """
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT status FROM accounts WHERE label=?", (label,)
+            ).fetchone()
+            if row is None:
+                return False
+            conn.execute(
+                "UPDATE accounts SET enabled=1, status='enabled',"
+                "  consecutive_failures=0, cooldown_until=0"
+                " WHERE label=?",
+                (label,),
+            )
+            return True
 
     # ── mark_failure / mark_success ───────────────────────────────────────────
 
@@ -370,6 +499,24 @@ class AccountPool:
             )
 
     # ── list / get ────────────────────────────────────────────────────────────
+
+    def list_account_quotas(self) -> list[dict]:
+        """返回每个账号的配额缓存摘要，供 admin UI 展示。
+
+        每项格式：{"label": "xxx", "quotas": {"grok-4.20-auto": {...}, ...}}
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT label, quota_cache_json FROM accounts ORDER BY priority ASC, label ASC"
+            ).fetchall()
+        result = []
+        for row in rows:
+            try:
+                quotas = json.loads(row["quota_cache_json"] or "{}")
+            except Exception:
+                quotas = {}
+            result.append({"label": row["label"], "quotas": quotas})
+        return result
 
     def list_accounts(self) -> list[AccountInfo]:
         """UI 用。按 priority asc, label asc 排序。"""
