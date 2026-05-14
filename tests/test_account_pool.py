@@ -188,6 +188,68 @@ class TestCooldown:
             row = conn.execute("SELECT cooldown_until FROM accounts WHERE label='a'").fetchone()
         assert row["cooldown_until"] > time.time() + 290
 
+    def test_mark_failure_with_retry_after_overrides_default(self, tmp_path):
+        """retry_after 优先于 _COOLDOWN_MAP 默认值（image_rate_limited 默认 60s，retry_after=120 覆盖）。"""
+        pool = make_pool(tmp_path)
+        pool.upsert_account(acc("a"))
+        pool.mark_failure("a", "image_rate_limited", retry_after=120.0)
+
+        with pool._connect() as conn:
+            row = conn.execute("SELECT status, cooldown_until FROM accounts WHERE label='a'").fetchone()
+        assert row["status"] == "cooling"
+        # cooldown_until 应接近 now + 120，不是 now + 60
+        assert row["cooldown_until"] > time.time() + 100  # ~120s，余量容错
+
+    def test_mark_failure_tiered_minute_hour_day(self, tmp_path):
+        """分级 cooldown：minute/hour/day exhausted 各有不同默认时长。"""
+        pool = make_pool(tmp_path)
+
+        for code in ["quota_minute_exhausted", "quota_hour_exhausted", "quota_day_exhausted"]:
+            pool.upsert_account(acc(code))
+
+        pool.mark_failure("quota_minute_exhausted", "quota_minute_exhausted")
+        pool.mark_failure("quota_hour_exhausted", "quota_hour_exhausted")
+        pool.mark_failure("quota_day_exhausted", "quota_day_exhausted")
+
+        now = time.time()
+        with pool._connect() as conn:
+            row_min = conn.execute(
+                "SELECT cooldown_until FROM accounts WHERE label='quota_minute_exhausted'"
+            ).fetchone()
+            row_hour = conn.execute(
+                "SELECT cooldown_until FROM accounts WHERE label='quota_hour_exhausted'"
+            ).fetchone()
+            row_day = conn.execute(
+                "SELECT cooldown_until FROM accounts WHERE label='quota_day_exhausted'"
+            ).fetchone()
+
+        # minute: ~60s
+        assert row_min["cooldown_until"] > now + 55
+        assert row_min["cooldown_until"] < now + 90  # 不应超过 1.5 分钟
+
+        # hour: ~3600s
+        assert row_hour["cooldown_until"] > now + 3500
+
+        # day: ~86400s
+        assert row_day["cooldown_until"] > now + 86000
+
+    def test_5xx_no_cooldown_but_inc_failures(self, tmp_path):
+        """upstream_5xx 不触发冷却，但 consecutive_failures 和 fail_count 都增长。"""
+        pool = make_pool(tmp_path)
+        pool.upsert_account(acc("a"))
+
+        pool.mark_failure("a", "upstream_5xx")
+        pool.mark_failure("a", "upstream_5xx")
+
+        with pool._connect() as conn:
+            row = conn.execute(
+                "SELECT status, cooldown_until, consecutive_failures, fail_count FROM accounts WHERE label='a'"
+            ).fetchone()
+        assert row["status"] == "enabled"        # 不冷却
+        assert row["cooldown_until"] == 0.0      # 无冷却时间
+        assert row["consecutive_failures"] == 2  # 失败计数增长
+        assert row["fail_count"] == 2
+
 
 # ── auto_disabled ─────────────────────────────────────────────────────────────
 
