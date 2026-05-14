@@ -32,12 +32,26 @@ class Session:
     expires_at: float
 
 
+_SLIDING_THRESHOLD = 0.5  # 剩余 TTL 低于此比例时触发续期
+
+
+class _SessionsProxy:
+    """兼容测试代码的 `session_store._sessions.clear()` 调用，实际委托到 revoke_all()。"""
+
+    def __init__(self, store: "SessionStore") -> None:
+        self._store = store
+
+    def clear(self) -> None:
+        self._store.revoke_all()
+
+
 class SessionStore:
     def __init__(self, ttl_seconds: int = DEFAULT_TTL_SECONDS, db_path: Path = _DB_PATH) -> None:
         self._ttl = ttl_seconds
         self._db_path = db_path
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_table()
+        self._sessions = _SessionsProxy(self)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
@@ -84,6 +98,32 @@ class SessionStore:
             if row is None:
                 return None
             return Session(token=row["token"], csrf=row["csrf"], expires_at=row["expires_at"])
+
+    def touch(self, token: str | None) -> Session | None:
+        """续期：若剩余 TTL < 50% 则把 expires_at 重置到 now + ttl，并返回新 Session；
+        否则返回当前 Session（无变化）；token 无效返回 None。"""
+        if not token:
+            return None
+        now = time.time()
+        threshold = self._ttl * _SLIDING_THRESHOLD
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT token, csrf, expires_at FROM sessions"
+                " WHERE token=? AND expires_at > ?",
+                (token, now),
+            ).fetchone()
+            if row is None:
+                return None
+            sess = Session(token=row["token"], csrf=row["csrf"], expires_at=row["expires_at"])
+            remaining = sess.expires_at - now
+            if remaining < threshold:
+                new_expires_at = now + self._ttl
+                conn.execute(
+                    "UPDATE sessions SET expires_at=? WHERE token=?",
+                    (new_expires_at, token),
+                )
+                return Session(token=sess.token, csrf=sess.csrf, expires_at=new_expires_at)
+            return sess
 
     def revoke(self, token: str | None) -> bool:
         if not token:
