@@ -26,6 +26,7 @@ from .auth_session import CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, session_stor
 from .config import Settings, SettingsStore, load_settings, mask_secret
 from .signed_url import sign_file_url, verify_signed_path
 from .db import log_db
+from .accounts import Account, AccountPool, account_pool
 from .curl_import import CurlImportError, parse_grok_curl
 from .grok_client import (
     GrokClientError,
@@ -3117,6 +3118,127 @@ async def grok_assets_save_local(
             logger.exception("save local asset failed: key=%s", item.key)
             errors.append({"key": item.key, "filename": item.filename, "error": "Internal server error"})
     return JSONResponse({"saved": saved, "skipped": skipped, "errors": errors})
+
+
+# ---------------------------------------------------------------------------
+# Admin: 账号管理 (Account Pool)
+# ---------------------------------------------------------------------------
+
+
+class _AccountUpsertRequest(BaseModel):
+    label: str
+    cookie: str
+    user_agent: str = ""
+    browser: str = "chrome142"
+    proxy: str = ""
+    statsig_id: str = ""
+    enabled: bool = True
+    priority: int = 1
+    weight: int = 10
+
+
+class _AccountEnabledRequest(BaseModel):
+    enabled: bool
+
+
+class _AccountImportCurlRequest(BaseModel):
+    curl: str
+    label: str
+    priority: int = 1
+    weight: int = 10
+
+
+@app.get("/admin/accounts", tags=[_TAG_ADMIN], summary="列出所有 Grok 账号",
+         description="返回账号池中所有账号的状态快照，包括启用状态、优先级、配额统计、最近使用时间等。",
+         dependencies=[Depends(_require_api_key)])
+async def admin_list_accounts() -> JSONResponse:
+    accounts = account_pool.list_accounts()
+    return JSONResponse({"accounts": [a.to_dict() for a in accounts]})
+
+
+@app.post("/admin/accounts", tags=[_TAG_ADMIN], summary="新增 / 更新 Grok 账号",
+          description="以 label 为主键，新增或更新账号配置。cookie 字段必填；其余留空则保持默认值。",
+          dependencies=[Depends(_require_api_key)])
+async def admin_upsert_account(req: _AccountUpsertRequest) -> JSONResponse:
+    if not req.label.strip():
+        raise HTTPException(status_code=400, detail="label 不能为空")
+    if not req.cookie.strip():
+        raise HTTPException(status_code=400, detail="cookie 不能为空")
+    acc = Account(
+        label=req.label.strip(),
+        cookie=req.cookie.strip(),
+        user_agent=req.user_agent.strip(),
+        browser=req.browser.strip() or "chrome142",
+        proxy=req.proxy.strip(),
+        statsig_id=req.statsig_id.strip(),
+        enabled=req.enabled,
+        priority=req.priority,
+        weight=req.weight,
+    )
+    account_pool.upsert_account(acc)
+    logger.info("admin: upsert account label=%r", acc.label)
+    return JSONResponse({"ok": True, "label": acc.label})
+
+
+@app.delete("/admin/accounts/{label}", tags=[_TAG_ADMIN], summary="删除 Grok 账号",
+            description="从账号池中移除指定账号。账号不存在时返回 404。",
+            dependencies=[Depends(_require_api_key)])
+async def admin_delete_account(label: str) -> JSONResponse:
+    ok = account_pool.delete_account(label)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"账号 {label!r} 不存在")
+    logger.info("admin: deleted account label=%r", label)
+    return JSONResponse({"ok": True, "label": label})
+
+
+@app.post("/admin/accounts/{label}/enabled", tags=[_TAG_ADMIN], summary="启用 / 禁用账号",
+          description="切换指定账号的启用状态。禁用后状态变为 `manually_disabled`，不参与请求调度。",
+          dependencies=[Depends(_require_api_key)])
+async def admin_set_account_enabled(label: str, req: _AccountEnabledRequest) -> JSONResponse:
+    ok = account_pool.set_enabled(label, req.enabled)
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"账号 {label!r} 不存在")
+    action = "enabled" if req.enabled else "disabled"
+    logger.info("admin: account %s label=%r", action, label)
+    return JSONResponse({"ok": True, "label": label, "enabled": req.enabled})
+
+
+@app.post("/admin/accounts/import-curl", tags=[_TAG_ADMIN], summary="从 cURL 导入新账号",
+          description=(
+              "解析 Chrome/Edge 复制的 cURL 命令，提取 Cookie、UA、浏览器指纹，"
+              "以指定 label 注册为新账号（不做冒烟验证，速度快）。\n\n"
+              "label 已存在时会覆盖更新。"
+          ),
+          dependencies=[Depends(_require_api_key)])
+async def admin_import_curl_as_account(req: _AccountImportCurlRequest) -> JSONResponse:
+    """复用现有 curl_import.parse_grok_curl，但落到账号表而不是 settings。"""
+    if not req.label.strip():
+        raise HTTPException(status_code=400, detail="label 不能为空")
+    if not req.curl.strip():
+        raise HTTPException(status_code=400, detail="curl 不能为空")
+    try:
+        result = parse_grok_curl(req.curl)
+    except CurlImportError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    acc = Account(
+        label=req.label.strip(),
+        cookie=result.cookie,
+        user_agent=result.user_agent,
+        browser=result.browser,
+        proxy="",
+        statsig_id=result.statsig_id,
+        enabled=True,
+        priority=req.priority,
+        weight=req.weight,
+    )
+    account_pool.upsert_account(acc)
+    logger.info("admin: import-curl account label=%r browser=%s", acc.label, acc.browser)
+    return JSONResponse({
+        "ok": True,
+        "label": acc.label,
+        "browser": acc.browser,
+        "cookie_masked": acc.cookie[:8] + "..." + acc.cookie[-8:] if len(acc.cookie) > 16 else "***",
+    })
 
 
 def run() -> None:
