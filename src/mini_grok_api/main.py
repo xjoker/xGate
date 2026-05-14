@@ -1240,7 +1240,7 @@ async def proxy_grok_asset(
             return StreamingResponse(gen, media_type=content_type,
                                      headers={"Cache-Control": "private, max-age=43200"})
         except GrokClientError as exc:
-            acq.mark_failure(exc.code or "upstream_5xx")
+            acq.mark_failure(exc.code or "upstream_5xx", retry_after=exc.retry_after)
             return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
         except Exception:
             acq.mark_failure("upstream_5xx")
@@ -1663,7 +1663,7 @@ async def videos_generate(
             if exc.body:
                 logger.error("video generate error body: %s", exc.body)
                 msg = f"{msg} | upstream: {exc.body}"
-            acq.mark_failure(exc.code or "upstream_5xx")
+            acq.mark_failure(exc.code or "upstream_5xx", retry_after=exc.retry_after)
             monitor.record_failure(exc.status_code, str(exc), cloudflare=exc.code == "cloudflare_challenge")
             log_db.log_video(
                 request_id=rid, model="grok-imagine-video", prompt=prompt_text,
@@ -1710,7 +1710,7 @@ async def video_status(
         try:
             media_url = await get_video_link(acq.settings, video_id)
         except GrokClientError as exc:
-            acq.mark_failure(exc.code or "upstream_5xx")
+            acq.mark_failure(exc.code or "upstream_5xx", retry_after=exc.retry_after)
             return _error_response(str(exc), exc.status_code, code=exc.code or "upstream_error")
         except Exception:
             acq.mark_failure("upstream_5xx")
@@ -1916,7 +1916,7 @@ async def chat_completions(
                             )
                     except GrokClientError as exc:
                         code = exc.code or "upstream_error"
-                        acq.mark_failure(code)
+                        acq.mark_failure(code, retry_after=exc.retry_after)
                         monitor.record_failure(exc.status_code, str(exc), cloudflare=code == "cloudflare_challenge")
                         log_db.log_chat(
                             request_id=rid, model=req.model, prompt=prompt,
@@ -1987,7 +1987,7 @@ async def chat_completions(
                     )
                 except GrokClientError as exc:
                     code = exc.code or "upstream_error"
-                    acq.mark_failure(code)
+                    acq.mark_failure(code, retry_after=exc.retry_after)
                     monitor.record_failure(exc.status_code, str(exc), cloudflare=code == "cloudflare_challenge")
                     log_db.log_chat(
                         request_id=rid, model=req.model, prompt=prompt,
@@ -2018,7 +2018,7 @@ async def chat_completions(
             content = await complete_chat(acq.settings, message=prompt, mode_id=spec.mode_id)
         except GrokClientError as exc:
             code = exc.code or "upstream_error"
-            acq.mark_failure(code)
+            acq.mark_failure(code, retry_after=exc.retry_after)
             monitor.record_failure(exc.status_code, str(exc), cloudflare=code == "cloudflare_challenge")
             log_db.log_chat(
                 request_id=rid, model=req.model, prompt=prompt,
@@ -2658,7 +2658,7 @@ async def chat_imagine_endpoint(
                 image_count=req.image_count, aspect_ratio=req.aspect_ratio,
             )
         except GrokClientError as exc:
-            acq.mark_failure(exc.code or "upstream_5xx")
+            acq.mark_failure(exc.code or "upstream_5xx", retry_after=exc.retry_after)
             log_db.log_image(
                 request_id=sess_id, model=req.mode_id, prompt=req.prompt,
                 image_count=0, aspect_ratio="", source="chat-imagine",
@@ -2853,6 +2853,18 @@ async def update_config(
         if new_api_key is not None and new_api_key != old_api_key:
             revoked = session_store.revoke_all()
             logger.info("api_key rotated; revoked %d active session(s)", revoked)
+        # 凭证变更：同步 default 账号（保留 enabled/priority/weight 及运行时状态）
+        # grok_proxy 总在 patch 里（允许清空），只有值真的变化时才算凭证变更
+        _EXPLICIT_CREDENTIAL_KEYS = {"grok_cookie", "grok_user_agent", "grok_browser", "grok_statsig_id"}
+        _credential_changed = bool(_EXPLICIT_CREDENTIAL_KEYS & patch.keys())
+        if not _credential_changed and "grok_proxy" in patch:
+            # grok_proxy 清空/赋值时，与旧值比较，真的不同才触发同步
+            fresh_settings = settings_store.get()
+            _credential_changed = (patch["grok_proxy"] != fresh_settings.grok_proxy)
+        if _credential_changed:
+            fresh_settings = settings_store.get()
+            account_pool.import_from_settings(fresh_settings, force_refresh_default=True)
+            logger.info("account_pool: default account synced from settings")
     return JSONResponse({"ok": True, "message": "配置已更新。"})
 
 
@@ -3058,7 +3070,7 @@ async def grok_assets_list(
                 log_db.upsert_grok_assets(data["assets"])
             return JSONResponse(data)
         except GrokClientError as exc:
-            acq.mark_failure(exc.code or "upstream_5xx")
+            acq.mark_failure(exc.code or "upstream_5xx", retry_after=exc.retry_after)
             return _error_response(str(exc), exc.status_code, code=exc.code or "upstream_error")
         except Exception:
             acq.mark_failure("upstream_5xx")
@@ -3080,7 +3092,7 @@ async def grok_asset_delete(
                 log_db.mark_asset_cloud_deleted(asset_id)  # 仅在 API 200 后才标记
             return JSONResponse({"ok": True, "cloud_deleted": confirmed})
         except GrokClientError as exc:
-            acq.mark_failure(exc.code or "upstream_5xx")
+            acq.mark_failure(exc.code or "upstream_5xx", retry_after=exc.retry_after)
             return _error_response(str(exc), exc.status_code, code=exc.code or "upstream_error")
         except Exception:
             acq.mark_failure("upstream_5xx")
@@ -3121,7 +3133,7 @@ async def grok_asset_download(
                 headers["Content-Disposition"] = f'attachment; filename="{safe_name}"'
             return StreamingResponse(gen, media_type=content_type, headers=headers)
         except GrokClientError as exc:
-            acq.mark_failure(exc.code or "upstream_5xx")
+            acq.mark_failure(exc.code or "upstream_5xx", retry_after=exc.retry_after)
             return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
         except Exception:
             acq.mark_failure("upstream_5xx")

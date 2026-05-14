@@ -233,7 +233,7 @@ class WsGateway:
         except GrokClientError as exc:
             _job_error = exc
             if _acq is not None:
-                _acq.mark_failure(exc.code or "upstream_5xx")
+                _acq.mark_failure(exc.code or "upstream_5xx", retry_after=exc.retry_after)
             raise
         except Exception as exc:
             _job_error = exc

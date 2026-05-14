@@ -50,12 +50,65 @@ class GrokClientError(RuntimeError):
         status_code: int = 502,
         body: str = "",
         code: str | None = None,
+        retry_after: float | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.body = body
         self.code = code
+        self.retry_after: float | None = retry_after
         self.wait_time_seconds: int | None = None
+
+
+def _parse_retry_after(headers: Any) -> float | None:
+    """从响应 headers 提取 Retry-After 秒数。
+
+    支持格式：
+    - 纯整数秒数字符串（"120"）
+    - HTTP-date 格式（"Wed, 21 Oct 2015 07:28:00 GMT"）
+    - x-ratelimit-reset-after / x-ratelimit-reset-seconds
+
+    返回 float 秒数，解析失败返回 None。
+    """
+    if headers is None:
+        return None
+
+    def _try_get(key: str) -> str | None:
+        try:
+            return headers.get(key)
+        except Exception:
+            return None
+
+    raw = (
+        _try_get("retry-after")
+        or _try_get("Retry-After")
+        or _try_get("x-ratelimit-reset-after")
+        or _try_get("x-ratelimit-reset-seconds")
+    )
+    if not raw:
+        return None
+
+    raw = raw.strip()
+    # 纯数字秒数
+    try:
+        val = float(raw)
+        if val >= 0:
+            return val
+    except ValueError:
+        pass
+
+    # HTTP-date 格式
+    try:
+        import email.utils
+        dt = email.utils.parsedate_to_datetime(raw)
+        import datetime
+        now_dt = datetime.datetime.now(tz=datetime.timezone.utc)
+        delta = (dt - now_dt).total_seconds()
+        return max(0.0, delta)
+    except Exception:
+        pass
+
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -338,11 +391,16 @@ async def stream_chat_events(
                     body=body,
                     code="cloudflare_challenge",
                 )
+            _retry_after = _parse_retry_after(response.headers) if response.status_code == 429 else None
+            _code = "rate_limit_exceeded" if response.status_code == 429 else (
+                "upstream_unauthorized" if response.status_code in (401, 403) else "upstream_error"
+            )
             raise GrokClientError(
                 f"Grok upstream returned {response.status_code}",
                 status_code=response.status_code,
                 body=body,
-                code="upstream_error",
+                code=_code,
+                retry_after=_retry_after,
             )
 
         try:
@@ -649,11 +707,16 @@ async def stream_chat(
                     body=body,
                     code="cloudflare_challenge",
                 )
+            _retry_after = _parse_retry_after(response.headers) if response.status_code == 429 else None
+            _code = "rate_limit_exceeded" if response.status_code == 429 else (
+                "upstream_unauthorized" if response.status_code in (401, 403) else "upstream_error"
+            )
             raise GrokClientError(
                 f"Grok upstream returned {response.status_code}",
                 status_code=response.status_code,
                 body=body,
-                code="upstream_error",
+                code=_code,
+                retry_after=_retry_after,
             )
 
         try:
@@ -728,9 +791,13 @@ async def chat_imagine(
             body = response.content.decode("utf-8", "replace")[:400]
             if _contains_cloudflare_challenge(response.status_code, body):
                 raise GrokClientError("Cloudflare challenge", status_code=403, code="cloudflare_challenge")
+            _retry_after = _parse_retry_after(response.headers) if response.status_code == 429 else None
+            _code = "rate_limit_exceeded" if response.status_code == 429 else (
+                "upstream_unauthorized" if response.status_code in (401, 403) else "upstream_error"
+            )
             raise GrokClientError(
                 f"chat returned {response.status_code}", status_code=response.status_code,
-                body=body, code="upstream_error",
+                body=body, code=_code, retry_after=_retry_after,
             )
         try:
             async for raw_line in response.aiter_lines():
@@ -1198,10 +1265,12 @@ async def _collect_batch(
             err = data.get("err_msg") or str(data)
             logger.error("imagine WS error frame full data: %s", data)
             wait = data.get("waitTimeSeconds") or data.get("wait_time_seconds")
+            wait_secs: float | None = float(wait) if wait is not None else None
             exc = GrokClientError(
                 f"Imagine upstream error: {err}",
                 status_code=429 if "rate limit" in err.lower() else 502,
                 code="image_rate_limited" if "rate limit" in err.lower() else None,
+                retry_after=wait_secs,
             )
             if wait is not None:
                 exc.wait_time_seconds = int(wait)

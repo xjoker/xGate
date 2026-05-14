@@ -22,15 +22,19 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ── 冷却时长规则表（Phase 1 简化版）──────────────────────────────────────────
+# ── 冷却时长规则表（Phase 2 分级版）──────────────────────────────────────────
 # code → 冷却秒数；None 表示不冷却（仍记录失败）
+# 优先级：mark_failure(retry_after=X) > 此表默认值
 _COOLDOWN_MAP: dict[str, float | None] = {
-    "image_rate_limited":    60.0,
-    "rate_limit_exceeded":   60.0,
-    "upstream_unauthorized": 30.0,
-    "cloudflare_challenge":  30.0,
-    "upstream_5xx":          None,  # 只计 consecutive_failures，不冷却
-    "timeout":               None,
+    "image_rate_limited":      60.0,
+    "rate_limit_exceeded":     60.0,
+    "quota_minute_exhausted":  60.0,
+    "quota_hour_exhausted":    3600.0,
+    "quota_day_exhausted":     86400.0,   # 24h 简化；下个 UTC 0 点细化留 Phase 3
+    "upstream_unauthorized":   30.0,
+    "cloudflare_challenge":    30.0,
+    "upstream_5xx":            None,  # 只计 consecutive_failures，不冷却
+    "timeout":                 None,
 }
 
 _AUTO_DISABLE_THRESHOLD = 5  # consecutive_failures 达到此值后 auto_disabled
@@ -455,15 +459,54 @@ class AccountPool:
 
     # ── import_from_settings ──────────────────────────────────────────────────
 
-    def import_from_settings(self, settings: "Settings") -> bool:
-        """启动时 lifespan 调用。
+    def import_from_settings(self, settings: "Settings", *, force_refresh_default: bool = False) -> bool:
+        """启动时 lifespan 调用，或 admin/config 更新凭证后同步 default 账号。
 
         若 DB 空且 settings.grok_cookie 非空，则 import 为 label='default' 账号。
-        防止重复 import（DB 中已有任何行时跳过）。
-        返回是否实际执行了 import。
+        防止重复 import（DB 中已有任何行时跳过），除非 force_refresh_default=True。
+
+        force_refresh_default=True：若 label='default' 账号已存在，则 upsert（更新凭证），
+        保留 enabled/priority/weight 等配置字段及所有运行时状态（cooldown/counts）。
+
+        返回是否实际执行了 import/update。
         """
         if not settings.grok_cookie:
             return False
+
+        if force_refresh_default:
+            # 强制同步 default 账号凭证（admin/config 改 cookie 时调用）
+            existing = self.get_account("default")
+            if existing is not None:
+                # 保留现有的 enabled/priority/weight，只更新凭证字段
+                updated = Account(
+                    label="default",
+                    cookie=settings.grok_cookie,
+                    user_agent=settings.grok_user_agent,
+                    browser=settings.grok_browser,
+                    proxy=settings.grok_proxy,
+                    statsig_id=settings.grok_statsig_id,
+                    enabled=existing.enabled,
+                    priority=existing.priority,
+                    weight=existing.weight,
+                )
+                self.upsert_account(updated)
+                logger.info("AccountPool: default account credentials refreshed from settings")
+                return True
+            # default 不存在但 force_refresh_default=True → 新建
+            account = Account(
+                label="default",
+                cookie=settings.grok_cookie,
+                user_agent=settings.grok_user_agent,
+                browser=settings.grok_browser,
+                proxy=settings.grok_proxy,
+                statsig_id=settings.grok_statsig_id,
+                enabled=True,
+                priority=1,
+                weight=10,
+            )
+            self.upsert_account(account)
+            logger.info("AccountPool: imported 'default' account from settings (force_refresh)")
+            return True
 
         with self._connect() as conn:
             count = conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]
