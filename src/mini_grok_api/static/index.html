@@ -2929,7 +2929,7 @@ window.loadModels = async function() {
 
 async function loadModelQuotas() {
   try {
-    const c = await api('GET', '/v1/quota/chat');
+    const c = await api('POST', '/v1/quota/chat');
     const byModeId = {};
     for (const q of (c.chat_quotas || [])) byModeId[q.mode_id] = q;
     for (const row of document.querySelectorAll('#models-tbody tr')) {
@@ -2995,7 +2995,7 @@ window.modelsVerify = async function(btn) {
   btn.disabled = true;
   if (cell) { cell.textContent = '…'; cell.style.color = 'var(--fg-muted)'; }
   try {
-    const d = await api('GET', `/admin/models/verify?mode_id=${encodeURIComponent(modeId)}`);
+    const d = await api('POST', '/admin/models/verify', {mode_id: modeId});
     if (cell) {
       if (d.ok) {
         const rem = d.remaining ?? '?';
@@ -3113,8 +3113,8 @@ window.refreshQuota = async function() {
   label.textContent = '查询中…';
   try {
     const [d, c] = await Promise.all([
-      api('GET', '/v1/quota'),
-      api('GET', '/v1/quota/chat').catch(() => ({chat_quotas: []})),
+      api('POST', '/v1/quota'),
+      api('POST', '/v1/quota/chat').catch(() => ({chat_quotas: []})),
     ]);
     const chatQ = (c.chat_quotas || []).filter(x => !x.error);
     // chip 显示最受限的 chat 模型额度（used_pct 最高的）
@@ -3188,7 +3188,7 @@ function _setQuotaCard(prefix, color, q) {
 
 window.loadHome = async function() {
   try {
-    const d = await api('GET', '/admin/dashboard');
+    const d = await api('POST', '/admin/dashboard');
     // version
     const vEl = document.getElementById('h-version');
     if (vEl && d.version) vEl.textContent = 'v' + d.version;

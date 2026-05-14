@@ -2143,9 +2143,9 @@ async def _fetch_quota(settings: Settings, mode_name: str = "auto") -> dict | No
         return None
 
 
-@app.get("/v1/quota/chat", tags=[_TAG_QUOTA], summary="查询 Chat 模型配额",
-         description="并发查询动态模型注册表中全部非图片模型的 rate-limits",
-         dependencies=[Depends(_require_api_key)])
+@app.post("/v1/quota/chat", tags=[_TAG_QUOTA], summary="查询 Chat 模型配额",
+          description="并发查询动态模型注册表中全部非图片模型的 rate-limits",
+          dependencies=[Depends(_require_api_key)])
 async def chat_quota(settings: Annotated[Settings, Depends(_settings)]) -> JSONResponse:
     if not settings.grok_cookie:
         return _error_response("GROK_COOKIE not configured", 400, code="missing_grok_cookie")
@@ -2173,14 +2173,14 @@ async def chat_quota(settings: Annotated[Settings, Depends(_settings)]) -> JSONR
     return JSONResponse({"chat_quotas": list(out)})
 
 
-@app.get("/v1/quota/image", tags=[_TAG_QUOTA], summary="探测图片生成额度",
-         description=(
-             "依次用多个候选 modelName 查询 `/rest/rate-limits`，找出 grok.com 图片额度的实际接口。\n\n"
-             "返回 `candidates` 列表，每项含 `model_name`、`remaining`、`total`、`used_pct`（成功时），"
-             "或 `error`、`status_code`（失败时）。`status_code=404` 表示该 modelName 无效。\n\n"
-             "找到有效 modelName 后可在配置中记录供后续复用。"
-         ),
-         dependencies=[Depends(_require_api_key)])
+@app.post("/v1/quota/image", tags=[_TAG_QUOTA], summary="探测图片生成额度",
+          description=(
+              "依次用多个候选 modelName 查询 `/rest/rate-limits`，找出 grok.com 图片额度的实际接口。\n\n"
+              "返回 `candidates` 列表，每项含 `model_name`、`remaining`、`total`、`used_pct`（成功时），"
+              "或 `error`、`status_code`（失败时）。`status_code=404` 表示该 modelName 无效。\n\n"
+              "找到有效 modelName 后可在配置中记录供后续复用。"
+          ),
+          dependencies=[Depends(_require_api_key)])
 async def image_quota(settings: Annotated[Settings, Depends(_settings)]) -> JSONResponse:
     result = await query_image_rate_limits(settings)
     valid = [c for c in result["candidates"] if "remaining" in c]
@@ -2278,13 +2278,13 @@ async def chat_imagine_endpoint(
     })
 
 
-@app.get("/v1/quota", tags=[_TAG_QUOTA], summary="查询额度剩余",
-         description=(
-             "并发请求 Grok `/rest/rate-limits` 查询 auto / fast / think 三种模式的额度。\n\n"
-             "**返回**：每个模式的 `remaining`、`total`、`used`、`used_pct`（百分比）、`window_seconds`（窗口时长）。\n\n"
-             "当 auto 模式使用率 ≥ 90% 时 `image_blocked=true`，建议暂停生图。"
-         ),
-         dependencies=[Depends(_require_api_key)])
+@app.post("/v1/quota", tags=[_TAG_QUOTA], summary="查询额度剩余",
+          description=(
+              "并发请求 Grok `/rest/rate-limits` 查询 auto / fast / think 三种模式的额度。\n\n"
+              "**返回**：每个模式的 `remaining`、`total`、`used`、`used_pct`（百分比）、`window_seconds`（窗口时长）。\n\n"
+              "当 auto 模式使用率 ≥ 90% 时 `image_blocked=true`，建议暂停生图。"
+          ),
+          dependencies=[Depends(_require_api_key)])
 async def quota_check(settings: Annotated[Settings, Depends(_settings)]) -> JSONResponse:
     if not settings.grok_cookie:
         return _error_response("GROK_COOKIE not configured", 400, code="missing_grok_cookie")
@@ -2463,13 +2463,18 @@ async def admin_models_get(settings: Annotated[Settings, Depends(_settings)]) ->
     return JSONResponse({"models": list(settings.chat_models)})
 
 
-@app.get("/admin/models/verify", tags=[_TAG_ADMIN], summary="验证模型 modeId 是否有效",
-         description="对指定 modeId 调用 /rest/rate-limits，零消耗验证模型是否在线可用。",
-         dependencies=[Depends(_require_api_key)])
+class _ModelVerifyRequest(BaseModel):
+    mode_id: str = ""
+
+
+@app.post("/admin/models/verify", tags=[_TAG_ADMIN], summary="验证模型 modeId 是否有效",
+          description="对指定 modeId 调用 /rest/rate-limits，零消耗验证模型是否在线可用。",
+          dependencies=[Depends(_require_api_key)])
 async def admin_models_verify(
-    mode_id: str,
+    req: _ModelVerifyRequest,
     settings: Annotated[Settings, Depends(_settings)],
 ) -> JSONResponse:
+    mode_id = req.mode_id
     if not mode_id.strip():
         raise HTTPException(status_code=400, detail="mode_id 不能为空")
     try:
@@ -2534,9 +2539,9 @@ async def admin_status(settings: Annotated[Settings, Depends(_settings)]) -> dic
     }
 
 
-@app.get("/admin/dashboard", tags=[_TAG_ADMIN], summary="Dashboard 汇总",
-         description="一次性返回 Dashboard 所需全部数据：配额、任务统计、日志统计、运行状态。",
-         dependencies=[Depends(_require_api_key)])
+@app.post("/admin/dashboard", tags=[_TAG_ADMIN], summary="Dashboard 汇总",
+          description="一次性返回 Dashboard 所需全部数据：配额、任务统计、日志统计、运行状态。",
+          dependencies=[Depends(_require_api_key)])
 async def admin_dashboard(settings: Annotated[Settings, Depends(_settings)]) -> JSONResponse:
     # 按动态模型注册表查询，每个 mode_id 只查一次
     chat_specs = [s for s in get_model_specs() if not s.image_model]
