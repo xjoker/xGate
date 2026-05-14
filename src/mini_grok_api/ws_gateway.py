@@ -264,17 +264,20 @@ class WsGateway:
 
             try:
                 # 代理类型分流：SOCKS5 用 ProxyConnector，HTTP/无代理用 TCPConnector
+                # ssl: 默认 True（系统 cert），仅当 settings.grok_disable_ssl_verify=True 时跳过校验
+                _ssl_arg: bool = not settings.grok_disable_ssl_verify
                 if proxy and (proxy.startswith("socks5://") or proxy.startswith("socks://") or proxy.startswith("socks5h://")):
-                    connector = ProxyConnector.from_url(proxy, ssl=False)
+                    connector = ProxyConnector.from_url(proxy, ssl=_ssl_arg)
                     ws_proxy = None  # SOCKS5 已在 connector 层接管，不再传给 ws_connect
                 else:
-                    connector = aiohttp.TCPConnector(ssl=False)
+                    connector = aiohttp.TCPConnector(ssl=_ssl_arg)
                     ws_proxy = proxy
                 async with aiohttp.ClientSession(
                     connector=connector,
                     headers=_ws_headers(settings),
                 ) as http_sess:
-                    ws = await _ws_connect(http_sess, timeout, ws_proxy)
+                    ws = await _ws_connect(http_sess, timeout, ws_proxy,
+                                            disable_ssl_verify=settings.grok_disable_ssl_verify)
                     async with ws:
                         await ws.send_json(_build_reset_msg())
                         await ws.send_json(_build_imagine_msg(

@@ -19,7 +19,8 @@ from typing import Annotated, Any, Literal
 from contextlib import asynccontextmanager
 
 from fastapi import Cookie, Depends, FastAPI, Form, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from pydantic import BaseModel
 
 from .accounts import AccountPool, AccountAcquisition  # noqa: F401 (AccountAcquisition for type hints)
@@ -257,8 +258,10 @@ app = FastAPI(
         "3. 图片生成使用模型名 `grok-imagine`（Speed）或 `grok-imagine-pro`（Quality）"
     ),
     openapi_tags=_TAGS_META,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    # 禁用默认匿名 /docs / /redoc / /openapi.json；下面注册带 _require_api_key 鉴权的自定义版本
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 _STATIC_DIR = Path(__file__).parent / "static"
 _STATIC_DIR.mkdir(exist_ok=True)
@@ -1048,6 +1051,25 @@ async def root() -> FileResponse:
 
 
 # ---------------------------------------------------------------------------
+# OpenAPI schema + Swagger UI / ReDoc — 鉴权后才暴露（避免匿名枚举 admin 接口）
+# ---------------------------------------------------------------------------
+
+@app.get("/openapi.json", include_in_schema=False, dependencies=[Depends(_require_api_key)])
+async def custom_openapi() -> JSONResponse:
+    return JSONResponse(app.openapi())
+
+
+@app.get("/docs", include_in_schema=False, dependencies=[Depends(_require_api_key)])
+async def custom_swagger_ui() -> HTMLResponse:
+    return get_swagger_ui_html(openapi_url="/openapi.json", title="xGate API — Swagger")
+
+
+@app.get("/redoc", include_in_schema=False, dependencies=[Depends(_require_api_key)])
+async def custom_redoc() -> HTMLResponse:
+    return get_redoc_html(openapi_url="/openapi.json", title="xGate API — ReDoc")
+
+
+# ---------------------------------------------------------------------------
 # Health / Models
 # ---------------------------------------------------------------------------
 
@@ -1683,7 +1705,8 @@ async def delete_local_grok_file(filename: str) -> JSONResponse:
         except Exception:
             pass
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Delete failed: {exc}") from exc
+        logger.exception("local grok file delete failed: %s", safe_fn)
+        raise HTTPException(status_code=500, detail="Delete operation failed") from exc
     return JSONResponse({"ok": True, "filename": safe_fn})
 
 
@@ -2541,7 +2564,8 @@ async def image_file_delete(session_id: str, filename: str) -> JSONResponse:
     try:
         path.unlink()
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Delete failed: {exc}") from exc
+        logger.exception("image file delete failed: sid=%s fn=%s", safe_sid, safe_fn)
+        raise HTTPException(status_code=500, detail="Delete operation failed") from exc
     return JSONResponse({"ok": True, "session_id": safe_sid, "filename": safe_fn})
 
 

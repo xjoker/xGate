@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
+import sys
 import tomllib
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import RLock
+
+logger = logging.getLogger(__name__)
 
 # 配置路径基于工作目录（cwd），确保 Docker（WORKDIR=/app + 挂载 ./data:/app/data）
 # 与本地（项目根目录运行）行为一致。**不能**用 __file__.parents 因为 pip install 后
@@ -50,6 +54,7 @@ class Settings:
     grok_browser: str
     grok_proxy: str
     grok_timeout_seconds: float
+    grok_disable_ssl_verify: bool  # 默认 False。仅在上游 cert 链不可信时临时打开，会导致 cookie 被 MitM 截获风险
     log_retention_days: int
     flaresolverr_url: str
     flaresolverr_proxy_url: str
@@ -98,7 +103,28 @@ def _float(data: dict, path: str, default: float) -> float:
         return default
 
 
+def _warn_if_loose_config_perms(path: Path) -> None:
+    """POSIX 下检查 mini.toml 权限；group/other 任意位可读 → 警告。
+
+    mini.toml 含明文 api_key 和 Grok cookie，多用户机器 / Docker volume umask 022
+    时其他本地用户可读取。Windows 跳过（ACL 模型不同）。
+    """
+    if sys.platform == "win32":
+        return
+    try:
+        mode = path.stat().st_mode & 0o777
+        if mode & 0o077:
+            logger.warning(
+                "mini.toml permissions %o are too loose (contains plaintext api_key/cookie); "
+                "run: chmod 600 %s",
+                mode, path,
+            )
+    except OSError:
+        pass
+
+
 def load_settings() -> Settings:
+    _warn_if_loose_config_perms(CONFIG_PATH)
     data = _read_toml(CONFIG_PATH)
     return Settings(
         server_host=_str(data, "server.host", "0.0.0.0"),
@@ -110,6 +136,7 @@ def load_settings() -> Settings:
         grok_browser=_str(data, "grok.browser", "chrome142"),
         grok_proxy=_str(data, "grok.proxy", ""),
         grok_timeout_seconds=_float(data, "grok.timeout_seconds", 120.0),
+        grok_disable_ssl_verify=bool(_get_nested(data, "grok.disable_ssl_verify", False)),
         log_retention_days=_int(data, "log.retention_days", 90),
         flaresolverr_url=_str(data, "grok.flaresolverr_url", ""),
         flaresolverr_proxy_url=_str(data, "grok.flaresolverr_proxy_url", ""),
@@ -145,6 +172,7 @@ def save_settings(settings: Settings, path: Path = CONFIG_PATH) -> None:
             f"browser = {json.dumps(settings.grok_browser, ensure_ascii=False)}",
             f"proxy = {json.dumps(settings.grok_proxy, ensure_ascii=False)}",
             f"timeout_seconds = {settings.grok_timeout_seconds}",
+            f"disable_ssl_verify = {str(settings.grok_disable_ssl_verify).lower()}",
             f"flaresolverr_url = {json.dumps(settings.flaresolverr_url, ensure_ascii=False)}",
             f"flaresolverr_proxy_url = {json.dumps(settings.flaresolverr_proxy_url, ensure_ascii=False)}",
             "",

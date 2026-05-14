@@ -1100,8 +1100,16 @@ def _save_image(blob_b64: str, image_id: str, ext: str, *, session_dir: Path) ->
     return filename
 
 
-async def _ws_connect(session: aiohttp.ClientSession, timeout: float, proxy: str | None) -> aiohttp.ClientWebSocketResponse:
-    ssl_ctx = False
+async def _ws_connect(
+    session: aiohttp.ClientSession,
+    timeout: float,
+    proxy: str | None,
+    *,
+    disable_ssl_verify: bool = False,
+) -> aiohttp.ClientWebSocketResponse:
+    # 默认 ssl=None（aiohttp 用系统 cert，安全）。仅在 settings.grok_disable_ssl_verify=True
+    # 时改为 ssl=False（跳过校验，仅作 cert chain 临时问题的应急开关，会让上行 Cookie 明文）
+    ssl_ctx: bool | None = False if disable_ssl_verify else None
     _retries = 3
     last_exc: Exception | None = None
     for attempt in range(_retries):
@@ -1461,7 +1469,9 @@ async def create_video(
     dl_headers = _video_headers(settings)
     dl_headers["Range"] = "bytes=0-"
 
-    connector2 = aiohttp.TCPConnector(ssl=False)
+    # 视频 CDN（assets.grok.com）通常 cert 正常；只有 settings.grok_disable_ssl_verify=True 才跳过校验
+    _ssl_arg: bool | None = False if settings.grok_disable_ssl_verify else None
+    connector2 = aiohttp.TCPConnector(ssl=_ssl_arg if _ssl_arg is not None else True)
     async with aiohttp.ClientSession(connector=connector2) as dl:
         try:
             async with dl.get(

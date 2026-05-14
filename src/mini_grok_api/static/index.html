@@ -1737,6 +1737,12 @@ function _videoTileHtml(url, extraStyle = '') {
 
 // 视频模态框：点击 tile 后打开全屏播放（带原生 controls + 关闭按钮 + ESC + 点背景关闭）
 window.openVideoModal = function(url) {
+  // 协议白名单：仅 http(s)（视频不允许 data: / blob:，前者体积不实际、后者 XSS 风险）
+  if (!url || typeof url !== 'string' || !/^https?:\/\//i.test(url.trim())) {
+    console.warn('blocked unsafe video URL:', url);
+    return;
+  }
+  const safeUrl = url.trim();
   closeVideoModal();
   const overlay = document.createElement('div');
   overlay.id = 'video-modal-overlay';
@@ -1746,9 +1752,12 @@ window.openVideoModal = function(url) {
       style="position:absolute;top:18px;right:18px;width:42px;height:42px;border:none;border-radius:50%;background:rgba(255,255,255,.12);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:22px;z-index:2">
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
     </button>
-    <video src="${url}" autoplay loop playsinline controls
+    <video autoplay loop playsinline controls
       style="max-width:96vw;max-height:92vh;border-radius:8px;background:#000;cursor:default;box-shadow:0 20px 60px rgba(0,0,0,.5)"
       onclick="event.stopPropagation()"></video>`;
+  // 用 setAttribute 设置 src，浏览器会自动拒绝 javascript: 等危险协议（虽然上面已白名单兜底）
+  const vid = overlay.querySelector('video');
+  if (vid) vid.setAttribute('src', safeUrl);
   overlay.addEventListener('click', e => { if (e.target === overlay) closeVideoModal(); });
   document.body.appendChild(overlay);
   document.addEventListener('keydown', _videoModalKeyHandler);
@@ -3830,10 +3839,22 @@ function _parseMd(text) {
     });
 
     // ── markdown 图片（转义前处理）──
+    // 协议白名单：仅 http(s) / data:image/* —— 阻止 javascript:、blob:、file: 等 XSS 路径
     const imgs = [];
     s = s.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => {
       const ph = `\x00IMG${imgs.length}\x00`;
-      imgs.push(`<img src="${src}" alt="${esc(alt)}" onclick="window.open('${src}','_blank')">`);
+      const trimmed = (src || '').trim();
+      const isHttp = /^https?:\/\//i.test(trimmed);
+      const isDataImg = /^data:image\/[a-z0-9.+-]+;base64,/i.test(trimmed);
+      const safeSrc = (isHttp || isDataImg) ? trimmed : '';
+      if (!safeSrc) {
+        // 不安全 URL → 占位文本，避免静默渲染
+        imgs.push(`<span class="img-blocked" title="blocked unsafe image URL">[image]</span>`);
+      } else {
+        // safeSrc 已校验过协议；HTML attribute 上下文中无需进一步转义（无 " 字符可破坏属性）
+        // onclick 用 JSON.stringify 防 ' 注入
+        imgs.push(`<img src="${safeSrc}" alt="${esc(alt)}" onclick="window.open(${JSON.stringify(safeSrc)},'_blank')">`);
+      }
       return ph;
     });
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import secrets
 import time
 import uuid
 from collections.abc import Callable
@@ -675,7 +676,8 @@ class _BearerAuthMiddleware:
             api_key = _settings().api_key
             if api_key:
                 auth = headers.get(b"authorization", b"").decode("utf-8", "replace")
-                if not (auth.startswith("Bearer ") and auth[7:].strip() == api_key):
+                token = auth[7:].strip() if auth.startswith("Bearer ") else ""
+                if not (token and secrets.compare_digest(token, api_key)):
                     body = json.dumps({"error": "Unauthorized", "code": "invalid_api_key"}).encode()
                     await send({"type": "http.response.start", "status": 401,
                                 "headers": [(b"content-type", b"application/json")]})
