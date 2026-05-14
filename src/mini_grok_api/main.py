@@ -14,7 +14,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from contextlib import asynccontextmanager
 
@@ -57,7 +57,9 @@ from .models import get_model, get_model_specs, list_models, model_to_openai, se
 from .monitor import Monitor
 from .openai_compat import (
     chat_response,
+    chat_response_tool_call,
     error_payload,
+    parse_tool_call,
     response_id,
     sse_data,
     sse_error,
@@ -677,14 +679,80 @@ def _require_api_key(
     )
 
 
+def _build_tools_system_block(req: ChatCompletionRequest) -> str | None:
+    """根据 req.tools / req.tool_choice 构建注入系统块文本。
+
+    基础版 single-shot tool_call：
+    - tool_choice="none"  → 返回 None（不注入）
+    - tool_choice="auto" / None / "required" / {type: function, function: {name: ...}} → 注入工具描述
+    - "required" 或指定 function name 时追加强制指令（best-effort，不强制约束）
+
+    不支持（follow-up 任务）：
+    - tool_choice 指定 function name 的真实强约束
+    """
+    if not req.tools:
+        return None
+
+    # tool_choice="none" 时完全禁用工具
+    tc = req.tool_choice
+    if tc == "none":
+        return None
+
+    # 构建工具描述列表
+    tool_lines: list[str] = []
+    for tool in req.tools:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function") or {}
+        name = fn.get("name") or tool.get("name") or "unknown"
+        desc = fn.get("description") or tool.get("description") or ""
+        params = fn.get("parameters") or tool.get("parameters") or {}
+        params_str = json.dumps(params, ensure_ascii=False)
+        tool_lines.append(
+            f"TOOL: {name}\n"
+            f"DESCRIPTION: {desc}\n"
+            f"PARAMETERS: {params_str}"
+        )
+
+    if not tool_lines:
+        return None
+
+    block = (
+        "You have access to the following tools:\n\n"
+        + "\n\n".join(tool_lines)
+        + "\n\n"
+        "When you decide to use a tool, respond with ONLY a JSON object on a single line:\n"
+        '{"tool_call": {"name": "<tool_name>", "arguments": {...}}}\n'
+        "Otherwise respond normally with plain text."
+    )
+
+    # tool_choice="required" 或指定 function 时追加强制提示（best-effort）
+    if tc == "required":
+        block += "\n\nYou MUST call a tool to respond."
+    elif isinstance(tc, dict):
+        fn_name = (tc.get("function") or {}).get("name")
+        if fn_name:
+            block += f"\n\nYou MUST call the tool `{fn_name}` to respond."
+
+    return block
+
+
 def _extract_prompt(req: ChatCompletionRequest) -> str:
     """把 OpenAI messages 拍平成单段 prompt 文本。
 
     多模态块的处理：image_url / input_audio 等非文本块当前底层 Grok 通道
     不支持，转成 [image]/[audio] 占位文本，让请求继续走通而不是 400。
     未知块类型直接跳过（保兼容性，不报错）。
+
+    工具注入（基础版 single-shot tool_call）：
+    当 req.tools 非空且 tool_choice!="none" 时，在最前面拼入系统工具描述块。
+    若原 messages 里已有 system，工具块拼在 system 消息之后（让用户 system 优先）。
     """
+    tools_block = _build_tools_system_block(req)
+
     parts: list[str] = []
+    tools_injected = False
+
     for message in req.messages:
         role = message.role
         content = message.content
@@ -692,6 +760,10 @@ def _extract_prompt(req: ChatCompletionRequest) -> str:
             text = content.strip()
             if text:
                 parts.append(f"[{role}]: {text}")
+            # 在第一条 system 消息之后注入工具块
+            if role == "system" and tools_block and not tools_injected:
+                parts.append(f"[system]: {tools_block}")
+                tools_injected = True
             continue
         if isinstance(content, list):
             segments: list[str] = []
@@ -710,6 +782,11 @@ def _extract_prompt(req: ChatCompletionRequest) -> str:
             joined = " ".join(segments).strip()
             if joined:
                 parts.append(f"[{role}]: {joined}")
+
+    # 若没有 system 消息，工具块放到最前面
+    if tools_block and not tools_injected:
+        parts.insert(0, f"[system]: {tools_block}")
+
     return "\n\n".join(parts).strip()
 
 
@@ -1525,9 +1602,97 @@ async def chat_completions(
     logger.info("chat: model=%s stream=%s prompt_len=%d", req.model, req.stream, len(prompt))
     include_usage = bool(req.stream_options and req.stream_options.include_usage)
     max_out = req.max_completion_tokens or req.max_tokens
+
+    # 判断是否有有效工具请求（tool_choice!="none" 且 tools 非空）
+    has_tools = bool(req.tools and req.tool_choice != "none")
+
     if req.stream:
         rid = response_id()
         t0 = time.monotonic()
+
+        # 流式 tool_call 简化方案：有工具请求时强制走非流式后台执行，
+        # 结果以单个 SSE chunk 发出。
+        # 流式 tool_call 增量（delta arguments）是 follow-up 任务，暂不实现。
+        if has_tools:
+            async def generate_tools_as_stream() -> AsyncGenerator[str, None]:
+                try:
+                    content = await complete_chat(settings, message=prompt, mode_id=spec.mode_id)
+                    tc = parse_tool_call(content)
+                    if tc is not None:
+                        # tool_call 分支：整段以单 chunk 发出（finish_reason=tool_calls）
+                        tool_name = tc["name"]
+                        tool_args = tc.get("arguments", {})
+                        args_str = json.dumps(tool_args, ensure_ascii=False) if not isinstance(tool_args, str) else tool_args
+                        delta: dict[str, Any] = {
+                            "role": "assistant",
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": f"call_{secrets.token_hex(12)}",
+                                    "type": "function",
+                                    "function": {"name": tool_name, "arguments": args_str},
+                                }
+                            ],
+                        }
+                        chunk: dict[str, Any] = {
+                            "id": rid,
+                            "object": "chat.completion.chunk",
+                            "created": int(time.time()),
+                            "model": req.model,
+                            "system_fingerprint": "fp_xgate",
+                            "choices": [{"index": 0, "delta": delta, "logprobs": None, "finish_reason": "tool_calls"}],
+                        }
+                        yield sse_data(chunk)
+                        if include_usage:
+                            yield sse_data(stream_usage_chunk(rid, req.model, prompt, content))
+                        yield "data: [DONE]\n\n"
+                        monitor.record_success()
+                        log_db.log_chat(
+                            request_id=rid, model=req.model, prompt=prompt,
+                            response=content,
+                            status="success", duration_ms=int((time.monotonic() - t0) * 1000),
+                        )
+                    else:
+                        # 普通 content 分支，走标准流式输出
+                        finish_reason = "stop"
+                        if max_out is not None and max(1, len(content) // 4) >= max_out:
+                            finish_reason = "length"
+                            content = content[: max_out * 4]
+                        yield sse_data(stream_chunk(rid, req.model, content, role="assistant"))
+                        yield sse_data(stream_chunk(rid, req.model, "", finish_reason=finish_reason, role=None))
+                        if include_usage:
+                            yield sse_data(stream_usage_chunk(rid, req.model, prompt, content))
+                        yield "data: [DONE]\n\n"
+                        monitor.record_success()
+                        log_db.log_chat(
+                            request_id=rid, model=req.model, prompt=prompt,
+                            response=content,
+                            status="success", duration_ms=int((time.monotonic() - t0) * 1000),
+                        )
+                except GrokClientError as exc:
+                    code = exc.code or "upstream_error"
+                    monitor.record_failure(exc.status_code, str(exc), cloudflare=code == "cloudflare_challenge")
+                    log_db.log_chat(
+                        request_id=rid, model=req.model, prompt=prompt,
+                        status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+                    )
+                    yield sse_error(str(exc), error_type="api_error", code=code)
+                    yield "data: [DONE]\n\n"
+                except Exception as exc:
+                    monitor.record_failure(500, str(exc))
+                    log_db.log_chat(
+                        request_id=rid, model=req.model, prompt=prompt,
+                        status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+                    )
+                    yield sse_error(str(exc))
+                    yield "data: [DONE]\n\n"
+
+            return StreamingResponse(
+                generate_tools_as_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+            )
 
         async def generate() -> AsyncGenerator[str, None]:
             chunks: list[str] = []
@@ -1620,6 +1785,21 @@ async def chat_completions(
 
     logger.info("chat: model=%s done stream=False in %.1fs len=%d",
                 req.model, time.monotonic() - t0, len(content))
+
+    # 工具调用解析（基础版 single-shot tool_call）：
+    # 若有工具请求，尝试解析模型输出是否是 tool_call JSON 格式。
+    if has_tools:
+        tc = parse_tool_call(content)
+        if tc is not None:
+            tool_name = tc["name"]
+            tool_args = tc.get("arguments", {})
+            monitor.record_success()
+            log_db.log_chat(
+                request_id=rid, model=req.model, prompt=prompt, response=content,
+                status="success", duration_ms=int((time.monotonic() - t0) * 1000),
+            )
+            return JSONResponse(chat_response_tool_call(req.model, tool_name, tool_args, prompt, rid=rid))
+
     finish_reason = "stop"
     if max_out is not None and max(1, len(content) // 4) >= max_out:
         finish_reason = "length"

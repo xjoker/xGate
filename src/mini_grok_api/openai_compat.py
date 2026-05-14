@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import secrets
 import time
 from typing import Any
@@ -154,3 +155,90 @@ def error_payload(
 def sse_error(message: str, *, error_type: str = "server_error", code: str | None = None) -> str:
     payload = error_payload(message, error_type=error_type, code=code)
     return f"event: error\ndata: {orjson.dumps(payload).decode('utf-8')}\n\n"
+
+
+# ---------------------------------------------------------------------------
+# Tool call 支持（基础版 / single-shot tool_call）
+#
+# 不支持的功能（follow-up 任务）：
+# - 多轮 tool_call（tool 结果回填后续轮）
+# - 流式 tool_call 增量（delta arguments 逐字符输出）
+# - tool_choice 指定具体 function name 时的强约束（best-effort prompt 提示）
+# ---------------------------------------------------------------------------
+
+def parse_tool_call(text: str) -> dict | None:
+    """尝试从模型输出中解析 tool_call JSON。
+
+    格式要求：整段输出（strip 后）必须是 ``{"tool_call": {"name": ..., "arguments": ...}}``。
+    解析失败或格式不符时返回 None，让调用方按普通 content 处理。
+
+    基础版约束：只处理单个 tool_call；不支持多调用、嵌套等复杂结构。
+    """
+    stripped = text.strip()
+    if not stripped.startswith('{"tool_call"'):
+        return None
+    try:
+        obj = json.loads(stripped)
+    except json.JSONDecodeError:
+        return None
+    tc = obj.get("tool_call")
+    if not isinstance(tc, dict):
+        return None
+    name = tc.get("name")
+    if not isinstance(name, str) or not name:
+        return None
+    return tc  # {"name": ..., "arguments": ...}
+
+
+def tool_call_id() -> str:
+    return f"call_{secrets.token_hex(12)}"
+
+
+def chat_response_tool_call(
+    model: str,
+    tool_name: str,
+    tool_arguments: Any,
+    prompt: str,
+    *,
+    rid: str | None = None,
+) -> dict:
+    """构造 OpenAI 标准 tool_calls 响应（非流式）。
+
+    ``tool_arguments`` 可以是 dict / list / str；若为 dict/list 会序列化为 JSON 字符串，
+    符合 OpenAI 规范中 ``function.arguments`` 必须是 string 的要求。
+    """
+    if isinstance(tool_arguments, str):
+        args_str = tool_arguments
+    else:
+        args_str = json.dumps(tool_arguments, ensure_ascii=False)
+
+    content_str = json.dumps({"tool_call": {"name": tool_name, "arguments": tool_arguments}}, ensure_ascii=False)
+    return {
+        "id": rid or response_id(),
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "system_fingerprint": SYSTEM_FINGERPRINT,
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": tool_call_id(),
+                            "type": "function",
+                            "function": {
+                                "name": tool_name,
+                                "arguments": args_str,
+                            },
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+                "logprobs": None,
+            }
+        ],
+        "usage": usage(prompt, content_str),
+    }
