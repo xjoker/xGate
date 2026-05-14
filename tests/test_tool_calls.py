@@ -201,5 +201,116 @@ class ChatResponseToolCallTests(unittest.TestCase):
         self.assertIn("total_tokens", resp["usage"])
 
 
+# ---------------------------------------------------------------------------
+# 测试 4：多轮 tool_call 支持（multi-turn）
+# ---------------------------------------------------------------------------
+
+class MultiTurnToolCallTests(unittest.TestCase):
+    _TOOLS = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_weather",
+                "description": "Get weather for a city",
+                "parameters": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]},
+            },
+        }
+    ]
+
+    def test_tool_role_message_serialized_with_name(self) -> None:
+        """role=tool 消息能正确序列化，并反查到 tool name（而非 tool_call_id）。"""
+        req = _make_req(
+            [
+                {"role": "user", "content": "What's the weather in Beijing?"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": '{"city":"Beijing"}'}}
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_1", "content": '{"temp": 15, "condition": "cloudy"}'},
+            ],
+            tools=self._TOOLS,
+        )
+        prompt = _extract(req)
+        # tool result 应该显示工具名，而不仅是 call_1
+        self.assertIn("get_weather", prompt)
+        self.assertIn("returned", prompt)
+        self.assertIn('{"temp": 15', prompt)
+
+    def test_tool_role_fallback_to_call_id_when_no_name(self) -> None:
+        """无法反查 name 时，tool result 回退使用 tool_call_id 标注。"""
+        req = _make_req(
+            [
+                {"role": "user", "content": "Do something"},
+                # 故意不包含 assistant 消息，使反查失败
+                {"role": "tool", "tool_call_id": "call_orphan", "content": "some result"},
+            ],
+        )
+        prompt = _extract(req)
+        self.assertIn("call_orphan", prompt)
+        self.assertIn("some result", prompt)
+
+    def test_assistant_tool_calls_serialized(self) -> None:
+        """role=assistant 带 tool_calls 且 content=None 时正确序列化为 [assistant called tool ...] 格式。"""
+        req = _make_req(
+            [
+                {"role": "user", "content": "Check weather"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {"id": "call_2", "type": "function", "function": {"name": "get_weather", "arguments": '{"city":"Shanghai"}'}}
+                    ],
+                },
+            ],
+            tools=self._TOOLS,
+        )
+        prompt = _extract(req)
+        self.assertIn("assistant called tool", prompt)
+        self.assertIn("get_weather", prompt)
+        self.assertIn("Shanghai", prompt)
+
+    def test_full_multi_turn_prompt_contains_all_parts(self) -> None:
+        """完整多轮场景：user → assistant(tool_call) → tool → user，prompt 包含所有信息。"""
+        req = _make_req(
+            [
+                {"role": "user", "content": "What's the weather in Beijing?"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {"id": "call_3", "type": "function", "function": {"name": "get_weather", "arguments": '{"city":"Beijing"}'}}
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_3", "content": '{"temp": 15, "condition": "cloudy"}'},
+                {"role": "user", "content": "Is that cold?"},
+            ],
+            tools=self._TOOLS,
+        )
+        prompt = _extract(req)
+        # 用户问题
+        self.assertIn("What's the weather in Beijing?", prompt)
+        # assistant 调工具
+        self.assertIn("assistant called tool", prompt)
+        self.assertIn("get_weather", prompt)
+        # tool 返回结果（应显示 tool name 而非 id）
+        self.assertIn("tool `get_weather` returned", prompt)
+        self.assertIn('{"temp": 15', prompt)
+        # 后续用户消息
+        self.assertIn("Is that cold?", prompt)
+
+    def test_tools_system_block_contains_multi_turn_hint(self) -> None:
+        """_build_tools_system_block 末尾包含多轮提示语句。"""
+        req = _make_req(
+            [{"role": "user", "content": "Hello"}],
+            tools=self._TOOLS,
+        )
+        prompt = _extract(req)
+        self.assertIn("Previous tool calls and their results are shown", prompt)
+        self.assertIn("respond with plain text", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()
