@@ -259,7 +259,7 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
 
 app = FastAPI(
     title="xGate API",
-    version="0.3.6",
+    version="0.3.7",
     lifespan=_lifespan,
     description=(
         "**xAI Grok → OpenAI-compatible API 网关**\n\n"
@@ -865,12 +865,20 @@ _CONVERSATION_BINDING_CLEANUP_INTERVAL = 12 * 3600  # 12 小时一轮
 
 
 async def _conversation_binding_cleanup_loop() -> None:
-    """定期清理过期 conversation_account_map 行（TTL 7 天，在 accounts.py 里定义）。"""
+    """定期清理过期 conversation_account_map 行（TTL 7 天，在 accounts.py 里定义）。
+
+    SAST round 5 P2 补强：同一 loop 顺手清 mcp_session 内存 dict（7d TTL，
+    cleanup() 函数早已定义但 v0.3.6 之前没人调用 → 长期运行内存累积）。
+    """
+    from . import mcp_session as _mcp_session
     while True:
         try:
             deleted = account_pool.cleanup_old_conversation_bindings()
             if deleted:
                 logger.info("conversation binding cleanup: pruned %d expired rows", deleted)
+            mcp_deleted = _mcp_session.cleanup()
+            if mcp_deleted:
+                logger.info("mcp session cleanup: pruned %d expired entries", mcp_deleted)
         except Exception:
             logger.exception("conversation binding cleanup loop error")
         await asyncio.sleep(_CONVERSATION_BINDING_CLEANUP_INTERVAL)
@@ -1131,6 +1139,23 @@ async def _disabled_account_handler(request: Request, exc: AccountDisabledError)
     payload["error"]["param"] = "X-Account-Label"
     payload["error"]["account_status"] = exc.status
     return JSONResponse(payload, status_code=400)
+
+
+def _safe_proxy_content_type(upstream_ct: str | None) -> str:
+    """SAST round 5 P2: 白名单上游 Content-Type，防 assets.grok.com 被污染时
+    返回 text/html 触发浏览器渲染 (stored XSS via 上游)。
+
+    仅允许 image/* video/* audio/* + application/json + application/octet-stream；
+    其它一律降级为 octet-stream（强制下载而非渲染）。
+    """
+    if not upstream_ct:
+        return "application/octet-stream"
+    ct = upstream_ct.split(";")[0].strip().lower()
+    if ct.startswith(("image/", "video/", "audio/")):
+        return upstream_ct  # 保留原始（含 charset 等参数）
+    if ct in {"application/json", "application/octet-stream"}:
+        return upstream_ct
+    return "application/octet-stream"
 
 
 def _validate_flaresolverr_url(url: str) -> None:
@@ -1655,7 +1680,7 @@ async def proxy_grok_asset(
     with account_pool.acquire() as acq:
         try:
             content_type, gen = await stream_grok_asset(acq.settings, key)
-            return StreamingResponse(gen, media_type=content_type,
+            return StreamingResponse(gen, media_type=_safe_proxy_content_type(content_type),
                                      headers={"Cache-Control": "private, max-age=43200"})
         except GrokClientError as exc:
             acq.mark_failure(exc.code or "upstream_5xx", retry_after=exc.retry_after)
@@ -3770,7 +3795,7 @@ async def grok_asset_download(
                 # 过滤 ", \, CR, LF — 防 header injection（CRLF 注入额外响应头）
                 safe_name = re.sub(r'[\r\n"\\]', '_', filename) or "download"
                 headers["Content-Disposition"] = f'attachment; filename="{safe_name}"'
-            return StreamingResponse(gen, media_type=content_type, headers=headers)
+            return StreamingResponse(gen, media_type=_safe_proxy_content_type(content_type), headers=headers)
         except GrokClientError as exc:
             acq.mark_failure(exc.code or "upstream_5xx", retry_after=exc.retry_after)
             return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
