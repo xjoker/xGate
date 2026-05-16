@@ -41,6 +41,26 @@ _COOLDOWN_MAP: dict[str, float | None] = {
 _AUTO_DISABLE_THRESHOLD = 5  # consecutive_failures 达到此值后 auto_disabled
 
 
+# ── 异常类型 ──────────────────────────────────────────────────────────────────
+class AccountPoolError(Exception):
+    """AccountPool 基础异常。"""
+
+
+class UnknownAccountError(AccountPoolError):
+    """force_label 指向不存在的账号。"""
+    def __init__(self, label: str) -> None:
+        super().__init__(f"account label {label!r} not found")
+        self.label = label
+
+
+class AccountDisabledError(AccountPoolError):
+    """force_label 指向已禁用的账号。"""
+    def __init__(self, label: str, *, status: str) -> None:
+        super().__init__(f"account {label!r} is disabled (status={status})")
+        self.label = label
+        self.status = status
+
+
 # ── 数据结构 ──────────────────────────────────────────────────────────────────
 
 @dataclass(frozen=True, slots=True)
@@ -285,9 +305,22 @@ class AccountPool:
 
         若提供 model_id，会跳过该模型配额低于 5% 的账号（soft_cooldown）。
         若所有账号均 soft_cooling，则回退到不过滤（让上游真 429 兜底）。
+
+        ## force_label 严格语义
+        客户端通过 `X-Account-Label` header 指定账号 → 严格模式：
+        - label 不存在  → raise UnknownAccountError
+        - label 存在但 enabled=False / status='manually_disabled' → raise AccountDisabledError
+        - 其余情况绕过 soft_cooldown 过滤，直接使用指定账号
+          （debug / sticky 场景下用户已经明确意图）
         """
         if force_label:
             account = self._pick_account(force_label=force_label)
+            if account is None:
+                raise UnknownAccountError(force_label)
+            if not account.enabled:
+                raise AccountDisabledError(force_label, status="manually_disabled")
+            # 注意：cooling / auto_disabled 状态保留 enabled=True，按 debug 意图仍允许使用
+            # （上游若真 429 会通过 mark_failure 自然更新冷却）
         elif model_id:
             # soft_cooldown 过滤：跳过配额 < 5% 的账号
             original_candidates = self._pick_candidates()

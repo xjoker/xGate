@@ -24,6 +24,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `/v1/quota/image` 响应新增 `per_account` 字段
   - `/admin/dashboard` 响应新增 `per_account_image_quota` 字段
   - 首页「按账号展开」视图为每个账号加图片配额 chip（粉色，区别于 chat chip）
+- **`X-Account-Label` 客户端 header**：API 客户端可指定 header 强制走某账号
+  （debug 试号 / 多轮对话 sticky 防 LRU 切号失忆）。覆盖 8 个用户面 endpoint：
+  chat completions、video generate/status、quota×3、chat-imagine。
+  - 新异常 `UnknownAccountError` / `AccountDisabledError`，handler 翻译为 400 +
+    `error.code=account_label_not_found / account_label_disabled`（strict 语义）
+  - `account_pool.acquire(force_label=...)` 在 label 不存在 / 被禁用时 raise
+    （之前会静默回退到 settings_fallback）
+  - image generations 仍走 LRU（透传需要 ws_gateway 协议扩展，留后续 PR）
 
 ### Fixed
 - 设置页「保存配置」silent failure：`apiForm` 不抛非 2xx，导致 CSRF 失败时仍弹「已保存」
