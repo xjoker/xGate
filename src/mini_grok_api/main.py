@@ -26,12 +26,18 @@ from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from .accounts import AccountPool, AccountAcquisition  # noqa: F401 (AccountAcquisition for type hints)
+from .accounts import (
+    Account,
+    AccountAcquisition,  # noqa: F401 (for type hints elsewhere)
+    AccountDisabledError,
+    AccountPool,  # noqa: F401 (re-exported for consumers)
+    UnknownAccountError,
+    account_pool,
+)
 from .auth_session import CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, session_store
 from .config import Settings, SettingsStore, load_settings, mask_secret
 from .signed_url import sign_file_url, verify_signed_path
 from .db import log_db
-from .accounts import Account, AccountPool, account_pool
 from .curl_import import CurlImportError, parse_grok_curl
 from .grok_client import (
     GrokClientError,
@@ -969,6 +975,43 @@ def _require_signed_or_auth(
     )
 
 
+def _account_label_header(
+    x_account_label: Annotated[str | None, Header(alias="x-account-label")] = None,
+) -> str | None:
+    """X-Account-Label header dependency。空字符串/缺失 → None；trim 后传给 acquire(force_label=...)。
+
+    使用：客户端 header 指定 `X-Account-Label: my-account`，请求会强制走该账号
+    （绕过 LRU + soft_cooldown）。账号不存在/禁用 → 400 + 错误 code，详见
+    `_account_pool_exception_handler`。Debug 场景（明确选某账号试）和 sticky 场景
+    （多轮对话固定账号绕过 LRU 切换造成的失忆）都很有用。
+    """
+    val = (x_account_label or "").strip()
+    return val or None
+
+
+@app.exception_handler(UnknownAccountError)
+async def _unknown_account_handler(request: Request, exc: UnknownAccountError) -> JSONResponse:
+    payload = error_payload(
+        f"X-Account-Label {exc.label!r} 在账号池中不存在",
+        error_type="invalid_request_error",
+        code="account_label_not_found",
+    )
+    payload["error"]["param"] = "X-Account-Label"
+    return JSONResponse(payload, status_code=400)
+
+
+@app.exception_handler(AccountDisabledError)
+async def _disabled_account_handler(request: Request, exc: AccountDisabledError) -> JSONResponse:
+    payload = error_payload(
+        f"X-Account-Label {exc.label!r} 已被禁用（status={exc.status}），请先在账号管理中启用",
+        error_type="invalid_request_error",
+        code="account_label_disabled",
+    )
+    payload["error"]["param"] = "X-Account-Label"
+    payload["error"]["account_status"] = exc.status
+    return JSONResponse(payload, status_code=400)
+
+
 def _validate_flaresolverr_url(url: str) -> None:
     """SSRF guard for /admin/config flaresolverr_url field.
 
@@ -1870,6 +1913,7 @@ async def serve_grok_file(filename: str) -> FileResponse:
 async def videos_generate(
     req: VideoGenerationRequest,
     settings: Annotated[Settings, Depends(_settings)],
+    account_label: Annotated[str | None, Depends(_account_label_header)] = None,
 ) -> JSONResponse:
     """提交 Grok 视频生成，流式等待完成后返回 video_id，前端轮询 /v1/videos/{video_id}/status。"""
     if not req.prompt.strip():
@@ -1890,7 +1934,7 @@ async def videos_generate(
     session_id = str(_uuid.uuid4())
     video_id: str | None = None
     _acq_label = ""
-    with account_pool.acquire(model_id="grok-imagine-video") as acq:
+    with account_pool.acquire(model_id="grok-imagine-video", force_label=account_label) as acq:
         _acq_label = acq.label
         monitor.record_start(acq.label)
         try:
@@ -1952,9 +1996,10 @@ async def videos_generate(
 async def video_status(
     video_id: str,
     settings: Annotated[Settings, Depends(_settings)],
+    account_label: Annotated[str | None, Depends(_account_label_header)] = None,
 ) -> JSONResponse:
     """轮询视频生成状态，ready=true 时返回 download_url。"""
-    with account_pool.acquire(model_id="grok-imagine-video") as acq:
+    with account_pool.acquire(model_id="grok-imagine-video", force_label=account_label) as acq:
         try:
             media_url = await get_video_link(acq.settings, video_id)
         except GrokClientError as exc:
@@ -1990,6 +2035,8 @@ async def images_generations(
     req: ImageGenerationRequest,
     settings: Annotated[Settings, Depends(_settings)],
 ) -> JSONResponse:
+    # TODO: X-Account-Label 透传给 ws_gateway（需要 _WsJob 加 force_label 字段 + 串行 worker
+    # 内部 acquire 时使用）。当前 image gen 仍走 LRU。
     model_id = req.model or settings.default_image_model
     spec = get_model(model_id)
     if spec is None or not spec.image_model:
@@ -2076,6 +2123,7 @@ async def images_generations(
 async def chat_completions(
     req: ChatCompletionRequest,
     settings: Annotated[Settings, Depends(_settings)],
+    account_label: Annotated[str | None, Depends(_account_label_header)] = None,
 ) -> JSONResponse | StreamingResponse:
     spec = get_model(req.model)
     if spec is None:
@@ -2106,7 +2154,7 @@ async def chat_completions(
         # 流式 tool_call 增量（delta arguments）是 follow-up 任务，暂不实现。
         if has_tools:
             async def generate_tools_as_stream() -> AsyncGenerator[str, None]:
-                with account_pool.acquire(model_id=req.model) as acq:
+                with account_pool.acquire(model_id=req.model, force_label=account_label) as acq:
                     try:
                         content = await complete_chat(acq.settings, message=prompt, mode_id=spec.mode_id)
                         tc = parse_tool_call(content)
@@ -2198,7 +2246,7 @@ async def chat_completions(
             first_chunk = True
             # max_out 是目标 token 数；用 4 字符≈1 token 的粗估转成字符上限
             char_budget = max_out * 4 if max_out is not None else None
-            with account_pool.acquire(model_id=req.model) as acq:
+            with account_pool.acquire(model_id=req.model, force_label=account_label) as acq:
                 try:
                     async for delta in stream_chat(acq.settings, message=prompt, mode_id=spec.mode_id):
                         if delta.done:
@@ -2269,7 +2317,7 @@ async def chat_completions(
     rid = response_id()
     t0 = time.monotonic()
     _chat_acq_label = ""
-    with account_pool.acquire(model_id=req.model) as acq:
+    with account_pool.acquire(model_id=req.model, force_label=account_label) as acq:
         _chat_acq_label = acq.label
         try:
             content = await complete_chat(acq.settings, message=prompt, mode_id=spec.mode_id)
@@ -2844,14 +2892,17 @@ async def _fetch_quota(settings: Settings, mode_name: str = "auto") -> dict | No
 @app.post("/v1/quota/chat", tags=[_TAG_QUOTA], summary="查询 Chat 模型配额",
           description="并发查询动态模型注册表中全部非图片模型的 rate-limits",
           dependencies=[Depends(_require_api_key)])
-async def chat_quota(settings: Annotated[Settings, Depends(_settings)]) -> JSONResponse:
+async def chat_quota(
+    settings: Annotated[Settings, Depends(_settings)],
+    account_label: Annotated[str | None, Depends(_account_label_header)] = None,
+) -> JSONResponse:
     if not settings.grok_cookie:
         return _error_response("GROK_COOKIE not configured", 400, code="missing_grok_cookie")
     specs = [s for s in get_model_specs() if not s.image_model]
     if not specs:
         return JSONResponse({"chat_quotas": [], "per_account": {}})
 
-    with account_pool.acquire() as acq:
+    with account_pool.acquire(force_label=account_label) as acq:
         async def _one(spec: ModelSpec) -> dict:
             base = {"model_id": spec.model_id, "mode_id": spec.mode_id, "label": spec.name}
             try:
@@ -2924,8 +2975,11 @@ def _per_account_chat_quotas_snapshot(specs: list[ModelSpec]) -> dict[str, list[
               "找到有效 modelName 后可在配置中记录供后续复用。"
           ),
           dependencies=[Depends(_require_api_key)])
-async def image_quota(settings: Annotated[Settings, Depends(_settings)]) -> JSONResponse:
-    with account_pool.acquire() as acq:
+async def image_quota(
+    settings: Annotated[Settings, Depends(_settings)],
+    account_label: Annotated[str | None, Depends(_account_label_header)] = None,
+) -> JSONResponse:
+    with account_pool.acquire(force_label=account_label) as acq:
         result = await query_image_rate_limits(acq.settings)
     valid = [c for c in result["candidates"] if "remaining" in c]
     result["best"] = valid[0] if valid else None
@@ -2980,6 +3034,7 @@ class _ChatImagineRequest(BaseModel):
 async def chat_imagine_endpoint(
     req: _ChatImagineRequest,
     settings: Annotated[Settings, Depends(_settings)],
+    account_label: Annotated[str | None, Depends(_account_label_header)] = None,
 ) -> JSONResponse:
     if not req.prompt or not req.prompt.strip():
         return _error_response("prompt is required", 400)
@@ -2987,7 +3042,7 @@ async def chat_imagine_endpoint(
     t0 = time.monotonic()
     summary = ""
     _chat_imagine_label = ""
-    with account_pool.acquire(model_id=req.mode_id) as acq:
+    with account_pool.acquire(model_id=req.mode_id, force_label=account_label) as acq:
         _chat_imagine_label = acq.label
         try:
             urls, summary = await chat_imagine(
@@ -3066,13 +3121,16 @@ async def chat_imagine_endpoint(
               "当 auto 模式使用率 ≥ 90% 时 `image_blocked=true`，建议暂停生图。"
           ),
           dependencies=[Depends(_require_api_key)])
-async def quota_check(settings: Annotated[Settings, Depends(_settings)]) -> JSONResponse:
+async def quota_check(
+    settings: Annotated[Settings, Depends(_settings)],
+    account_label: Annotated[str | None, Depends(_account_label_header)] = None,
+) -> JSONResponse:
     if not settings.grok_cookie:
         return _error_response("GROK_COOKIE not configured", 400, code="missing_grok_cookie")
 
     import asyncio, time as _time
     t0 = _time.monotonic()
-    with account_pool.acquire() as acq:
+    with account_pool.acquire(force_label=account_label) as acq:
         results = await asyncio.gather(*[
             _fetch_quota(acq.settings, mode) for mode in _QUOTA_MODES
         ])
