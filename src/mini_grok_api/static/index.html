@@ -1752,6 +1752,9 @@ function toast(msg, type = '') {
 
 // ── Helpers ────────────────────────────────────────────────────
 function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+// JSON.stringify 后再 HTML-escape 引号，安全嵌入 inline onclick="…" attribute。
+// 直接 JSON.stringify 会带 ASCII 双引号，浏览器解析 onclick="x("y")" 时第一个 " 就终止 attribute。
+function _attrJson(v) { return JSON.stringify(v).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/</g,'&lt;'); }
 
 // 视频 tile：缩略图（autoplay+muted+loop，无原生 controls）+ 点击整块打开模态框
 // 整个 tile 可点（不会被原生 controls 拦截，因为没启用 controls）
@@ -3256,9 +3259,9 @@ function _renderAccountsTable(accounts) {
       <td style="padding:8px 12px;font-family:var(--font-mono);font-size:11px;color:var(--fg-muted);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(a.cookie_masked)}">${esc(a.cookie_masked || '—')}</td>
       <td style="padding:8px 12px;white-space:nowrap">
         <div style="display:flex;gap:6px;align-items:center">
-          <button class="btn btn-outline btn-sm" onclick="accountsShowEditModal(${JSON.stringify(esc(a.label))})">编辑</button>
-          <button class="btn btn-outline btn-sm" onclick="accountsToggleEnabled(${JSON.stringify(esc(a.label))}, ${!isEnabled})">${toggleLabel}</button>
-          <button class="btn btn-outline btn-sm" style="color:#dc2626;border-color:#fca5a5" onclick="accountsDelete(${JSON.stringify(esc(a.label))})">删除</button>
+          <button class="btn btn-outline btn-sm" onclick="accountsShowEditModal(${_attrJson(a.label)})">编辑</button>
+          <button class="btn btn-outline btn-sm" onclick="accountsToggleEnabled(${_attrJson(a.label)}, ${!isEnabled})">${toggleLabel}</button>
+          <button class="btn btn-outline btn-sm" style="color:#dc2626;border-color:#fca5a5" onclick="accountsDelete(${_attrJson(a.label)})">删除</button>
         </div>
       </td>
     </tr>`;
@@ -3991,7 +3994,7 @@ function _parseMd(text) {
       } else {
         // 协议白名单后再用 esc() 处理属性上下文中的 " ' 等元字符，防止 URL 含特殊字符破坏属性边界
         const escSrc = esc(safeSrc);
-        imgs.push(`<img src="${escSrc}" alt="${esc(alt)}" onclick="window.open(${JSON.stringify(safeSrc)},'_blank')">`);
+        imgs.push(`<img src="${escSrc}" alt="${esc(alt)}" onclick="window.open(${_attrJson(safeSrc)},'_blank')">`);
       }
       return ph;
     });
@@ -4025,7 +4028,7 @@ async function _renderGrokImages(bubble) {
       if (url) {
         // 注意：url 同时进入 src 属性和 onclick JS 上下文 — 不能简单 esc()，
         // src 用 esc() 防属性注入，onclick 用 JSON.stringify 防 JS 字符串注入。
-        el.innerHTML = `<img src="${esc(url)}" style="max-width:100%;border-radius:8px;display:block;cursor:zoom-in" alt="${esc(prompt)}" onclick="window.open(${JSON.stringify(url)},'_blank')">`;
+        el.innerHTML = `<img src="${esc(url)}" style="max-width:100%;border-radius:8px;display:block;cursor:zoom-in" alt="${esc(prompt)}" onclick="window.open(${_attrJson(url)},'_blank')">`;
         el.style.border = 'none'; el.style.padding = '0';
       } else {
         el.innerHTML = `<div style="color:#dc2626;font-weight:500">⚠️ 图片生成失败</div><div style="color:#dc2626;font-size:12px;margin-top:4px">未返回 URL</div>`;
