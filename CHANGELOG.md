@@ -24,6 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `/v1/quota/image` 响应新增 `per_account` 字段
   - `/admin/dashboard` 响应新增 `per_account_image_quota` 字段
   - 首页「按账号展开」视图为每个账号加图片配额 chip（粉色，区别于 chat chip）
+- **GitHub Actions 升级到最新 major（Phase 3 #5，Node 20 deprecation 截止 2026-09-16）**：
+  - `actions/checkout` v4 → v6（Node 24）
+  - `actions/setup-python` v5 → v6
+  - `astral-sh/setup-uv` v5 → v8.1.0（immutable tag — v8+ 不发布 `@v8` 浮动 tag，
+    supply-chain 防护；下次升级时需手动 bump 此处的 patch 版本）
+  - `docker/setup-qemu-action` v3 → v4
+  - `docker/setup-buildx-action` v3 → v4
+  - `docker/login-action` v3 → v4
+  - `docker/metadata-action` v5 → v6
+  - `docker/build-push-action` v6 → v7
 - **`X-Account-Label` 客户端 header**：API 客户端可指定 header 强制走某账号
   （debug 试号 / 多轮对话 sticky 防 LRU 切号失忆）。覆盖 8 个用户面 endpoint：
   chat completions、video generate/status、quota×3、chat-imagine。
