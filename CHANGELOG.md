@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-05-17
+
+### Refactored
+- **拆出 `grok_files_client.py`**（advisor 评估的方案 B — 自闭合岛拆分，零回归）：
+  - `grok_client.py` 1902 → 1739 行 (-163)
+  - 新 `grok_files_client.py` 224 行，含 `list_grok_assets` / `delete_grok_asset`
+    / `stream_grok_asset` / `save_grok_asset_local` + `_files_headers` /
+    `_dl_headers` + `GROK_FILES_DIR` 等常量
+  - `grok_client.py` 末尾保留 backward-compat re-export，caller (main.py /
+    mcp_server.py / etc) 现有 `from .grok_client import list_grok_assets`
+    无需改动
+  - Yuki memory 9398f8c5「grok_client 不迁移」决策**部分推翻**：grok_files
+    自闭合岛已剥离，剩余 chat/imagine/video/auth 仍维持不动（6 个下划线
+    helper 跨模块依赖深，advisor 评估完整重构 ROI 为负）
+
+### Tests
+- 328 tests 全过（零回归）
+
 ## [0.3.7] - 2026-05-17
 
 ### Security

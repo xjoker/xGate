@@ -259,7 +259,7 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
 
 app = FastAPI(
     title="xGate API",
-    version="0.3.7",
+    version="0.3.8",
     lifespan=_lifespan,
     description=(
         "**xAI Grok → OpenAI-compatible API 网关**\n\n"
