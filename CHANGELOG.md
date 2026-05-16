@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- 依赖审计 + 升级（2026-05-16）：`pip-audit --strict` 当前 0 个 CVE。
+  `uv lock --upgrade` 升级 13 个 transitive 包到最新 patch/minor：
+  cryptography 47→48、idna 3.13→3.15、markdown-it-py 4.0→4.2、mcp 1.27.0→1.27.1、
+  orjson 3.11.8→3.11.9、propcache 0.4.1→0.5.2、pydantic 2.13.3→2.13.4、
+  pydantic-core 2.46.3→2.46.4、pydantic-settings 2.14.0→2.14.1、
+  requests 2.34.1→2.34.2、sse-starlette 3.4.1→3.4.4、tiktoken 0.12.0→0.13.0、
+  uvicorn 0.46.0→0.47.0。286 测试全过。
+
 ### Added
 - 账号管理「编辑」入口：复用账号 modal，支持只改 priority/weight 而保留旧 cookie
   （后端 `_AccountUpsertRequest.cookie` 改为可选；为空 + label 已存在则保留旧值）
