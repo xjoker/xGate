@@ -456,6 +456,80 @@ class AdminAccountsTests(unittest.TestCase):
         self.assertTrue(len(cookie_masked) < len(raw_cookie))
 
 
+class ImportCurlSyncsDefaultAccountTests(unittest.TestCase):
+    """BUG-A 回归测试：/admin/import-curl 写 settings 后必须同步 default 账号。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        _override_settings(TEST_API_KEY)
+        cls.client = TestClient(main_mod.app)
+
+    def setUp(self) -> None:
+        _setup_pool()
+
+    def test_import_curl_refreshes_default_account_cookie(self) -> None:
+        """旧 /admin/import-curl 端点 import 后，default 账号 cookie 必须更新。
+
+        过去行为（BUG-A）：仅写 settings.grok_cookie，未调
+        account_pool.import_from_settings(force_refresh_default=True) →
+        UI 看似导入成功，但请求仍走旧 cookie。
+        """
+        from mini_grok_api.accounts import Account
+        # 先植入一个 cookie 为 "stale" 的 default 账号
+        account_pool.upsert_account(Account(
+            label="default", cookie="sso=stale_cookie",
+            user_agent="", browser="chrome142", proxy="", statsig_id="",
+            enabled=True, priority=1, weight=10,
+        ))
+        # 用 unittest.mock 把 smoke_skills 短路（避免真访问 grok.com）
+        with patch("mini_grok_api.main.smoke_skills", new=AsyncMock(return_value={"status_code": 200})):
+            r = self.client.post(
+                "/admin/import-curl",
+                headers=_headers(),
+                data={"curl_text": _GROK_CURL},
+            )
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["ok"])
+        # 关键断言：default 账号 cookie 现在应来自新 cURL（含 abc123）
+        acc = account_pool.get_account("default")
+        self.assertIsNotNone(acc)
+        assert acc is not None
+        self.assertIn("abc123", acc.cookie, "default account cookie must be refreshed from imported cURL")
+        self.assertNotIn("stale_cookie", acc.cookie)
+
+
+class AccountUpsertWarmupTests(unittest.TestCase):
+    """BUG-C 回归测试：upsert/import-curl 后必须 schedule async quota warmup。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        _override_settings(TEST_API_KEY)
+        cls.client = TestClient(main_mod.app)
+
+    def setUp(self) -> None:
+        _setup_pool()
+
+    def test_upsert_schedules_warmup_task(self) -> None:
+        """POST /admin/accounts 后 _schedule_account_quota_warmup 必须被调用。"""
+        with patch("mini_grok_api.main._schedule_account_quota_warmup") as mock_warmup:
+            r = self.client.post("/admin/accounts", headers=_headers(), json={
+                "label": "warmup-test", "cookie": "sso=warmup_cookie",
+            })
+            self.assertEqual(r.status_code, 200)
+            mock_warmup.assert_called_once_with("warmup-test")
+
+    def test_import_curl_account_schedules_warmup(self) -> None:
+        """POST /admin/accounts/import-curl 同样要 schedule warmup。"""
+        with patch("mini_grok_api.main._schedule_account_quota_warmup") as mock_warmup:
+            r = self.client.post(
+                "/admin/accounts/import-curl",
+                headers=_headers(),
+                json={"curl": _GROK_CURL, "label": "warmup-curl"},
+            )
+            self.assertEqual(r.status_code, 200)
+            mock_warmup.assert_called_once_with("warmup-curl")
+
+
 class AccountPoolFallbackTests(unittest.TestCase):
     """settings.grok_cookie fallback 测试。
 

@@ -7,14 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-16
+
 ### Security
+- **CI 引入依赖 CVE 扫描**：`test.yml` 加 `pip-audit --strict` 步骤，与 pytest 并列，
+  发现任何 CVE 或元数据缺失立即阻断 merge。和 dependabot 互补（dependabot 推 PR，
+  pip-audit 卡守门）。
 - 依赖审计 + 升级（2026-05-16）：`pip-audit --strict` 当前 0 个 CVE。
   `uv lock --upgrade` 升级 13 个 transitive 包到最新 patch/minor：
   cryptography 47→48、idna 3.13→3.15、markdown-it-py 4.0→4.2、mcp 1.27.0→1.27.1、
   orjson 3.11.8→3.11.9、propcache 0.4.1→0.5.2、pydantic 2.13.3→2.13.4、
   pydantic-core 2.46.3→2.46.4、pydantic-settings 2.14.0→2.14.1、
   requests 2.34.1→2.34.2、sse-starlette 3.4.1→3.4.4、tiktoken 0.12.0→0.13.0、
-  uvicorn 0.46.0→0.47.0。286 测试全过。
+  uvicorn 0.46.0→0.47.0。
 
 ### Added
 - 账号管理「编辑」入口：复用账号 modal，支持只改 priority/weight 而保留旧 cookie
@@ -59,6 +64,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   避免事件冒泡导致的误关
 - 「修改账号有问题」：之前 admin UI 只能 +添加/删除/启停，priority/weight 必须
   删了重建。本次补齐 edit modal，对齐 Phase 3 backlog #2
+- **BUG-A** `/admin/import-curl`（旧 single-user 端点）写 `settings.grok_cookie`
+  后未调用 `account_pool.import_from_settings(force_refresh_default=True)`，导致
+  `default` 账号 cookie 不刷新 — UI 提示"导入成功"但实际请求仍走旧 cookie。
+  现与 `/admin/config` 行为对齐。+1 集成测试。
+- **BUG-B** 账号管理「编辑/禁用/删除」按钮静默失效：inline `onclick` 用
+  `JSON.stringify(esc(label))` 嵌入 HTML attribute，浏览器在第二个 ASCII `"`
+  截断属性值；按钮看似可点但 onclick 调用变 no-arg。新增 `_attrJson` helper
+  做 JSON.stringify + HTML 引号转义。修了 5 处同 pattern（含 PR-5 `_renderGrokImages`
+  和 `_parseMd` 中的 img onclick）。
+- **BUG-C** 新加 / 编辑账号后 `quota_cache` 要等 5 分钟（poll loop 周期）才填充，
+  UI per_account 视图空窗期太长。`/admin/accounts` POST 和
+  `/admin/accounts/import-curl` 现在 fire-and-forget schedule 一次 async warmup
+  (`_poll_one_account_quota`)，新账号秒级出现在 per_account 视图。+2 集成测试。
 
 ### Changed
 - 设置页 UI 拆分单/多用户：

@@ -258,7 +258,7 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
 
 app = FastAPI(
     title="xGate API",
-    version="0.2.0",
+    version="0.3.1",
     lifespan=_lifespan,
     description=(
         "**xAI Grok → OpenAI-compatible API 网关**\n\n"
@@ -858,6 +858,75 @@ def _minimal_settings_for_poll(acc: "Account") -> Settings:
     """为后台 poll loop 构造该账号的 Settings（从 settings_store 派生）。"""
     from .accounts import _as_settings
     return _as_settings(settings_store.get(), acc)
+
+
+async def _poll_one_account_quota(label: str) -> None:
+    """对单个账号跑一次 chat + image quota poll，写入 quota_cache_json。
+
+    BUG-C 修复用：新加 / 编辑账号后 fire-and-forget 调用，避免用户看到「新账号 5 分钟后才有数据」。
+    失败静默吞掉（账号可能 cookie 立即失效；后台 poll loop 会再试），不影响 caller。
+    """
+    global _IMAGE_QUOTA_MODEL_HINT
+    try:
+        acc = account_pool.get_account(label)
+        if acc is None or not acc.cookie:
+            return
+        shadow = _minimal_settings_for_poll(acc)
+        # chat models
+        specs = [s for s in get_model_specs() if not s.image_model]
+        for spec in specs:
+            try:
+                q = await query_rate_limits(shadow, model_name=spec.mode_id)
+                if q and "remainingQueries" in q:
+                    wait = float(q.get("waitTimeSeconds") or 0)
+                    account_pool.update_quota(
+                        label, spec.model_id,
+                        remaining=int(q["remainingQueries"]),
+                        total=int(q.get("totalQueries") or 0),
+                        reset_at=time.time() + wait,
+                    )
+            except Exception as exc:
+                logger.debug("warmup quota poll: label=%s model=%s err=%s", label, spec.model_id, exc)
+            await asyncio.sleep(0.5)  # 错峰，避免连发触发 grok 风控
+        # image quota（复用全局 hint，避免对该账号重跑 4-candidate 探测）
+        try:
+            if _IMAGE_QUOTA_MODEL_HINT:
+                img_raw = await query_rate_limits(shadow, model_name=_IMAGE_QUOTA_MODEL_HINT)
+                img_valid = (
+                    {"model_name": _IMAGE_QUOTA_MODEL_HINT, **img_raw}
+                    if img_raw and "remainingQueries" in img_raw else None
+                )
+            else:
+                img_result = await query_image_rate_limits(shadow)
+                img_valid = next(
+                    (c for c in img_result["candidates"] if "remaining" in c), None,
+                )
+                if img_valid:
+                    _IMAGE_QUOTA_MODEL_HINT = img_valid["model_name"]
+            if img_valid:
+                remaining = int(img_valid.get("remaining") or img_valid.get("remainingQueries") or 0)
+                total = int(img_valid.get("total") or img_valid.get("totalQueries") or remaining or 0)
+                wait = float(img_valid.get("wait_time_seconds") or img_valid.get("waitTimeSeconds") or 0)
+                account_pool.update_image_quota(
+                    label, model_name=img_valid["model_name"],
+                    remaining=remaining, total=total, reset_at=time.time() + wait,
+                )
+        except Exception as exc:
+            logger.debug("warmup image quota poll: label=%s err=%s", label, exc)
+        logger.info("warmup quota poll done for account=%s", label)
+    except Exception:
+        logger.exception("warmup quota poll error for label=%s", label)
+
+
+def _schedule_account_quota_warmup(label: str) -> None:
+    """fire-and-forget schedule，不阻塞当前请求。"""
+    import asyncio as _aio
+    try:
+        loop = _aio.get_running_loop()
+        loop.create_task(_poll_one_account_quota(label), name=f"warmup-quota-{label}")
+    except RuntimeError:
+        # 测试场景可能无 running loop；忽略（不影响主流程）
+        pass
 
 
 def _settings() -> Settings:
@@ -3240,7 +3309,11 @@ async def import_curl(curl_text: Annotated[str, Form()]) -> JSONResponse:
     if result.statsig_id:
         update_kwargs["grok_statsig_id"] = result.statsig_id
     settings_store.update(**update_kwargs)
+    # BUG-A 修复：与 /admin/config 行为对齐 — 写凭证到 settings 后同步刷新 default 账号，
+    # 否则 import-curl 之后 account_pool 仍使用旧 cookie，UI 看似导入成功但请求仍失败。
+    account_pool.import_from_settings(settings_store.get(), force_refresh_default=True)
     monitor.record_success(status=int(smoke["status_code"]))
+    logger.info("admin: import-curl synced default account from new settings")
     return JSONResponse({"ok": True, "message": f"cURL 导入和冒烟成功，状态码 {smoke['status_code']}。"})
 
 
@@ -3714,6 +3787,8 @@ async def admin_upsert_account(req: _AccountUpsertRequest) -> JSONResponse:
     account_pool.upsert_account(acc)
     action = "updated" if existing else "created"
     logger.info("admin: %s account label=%r", action, label)
+    # BUG-C 修复：立刻 schedule 一次 quota warmup，避免 5 分钟后才有 per_account 数据
+    _schedule_account_quota_warmup(label)
     return JSONResponse({"ok": True, "label": label, "action": action})
 
 
@@ -3770,6 +3845,8 @@ async def admin_import_curl_as_account(req: _AccountImportCurlRequest) -> JSONRe
     )
     account_pool.upsert_account(acc)
     logger.info("admin: import-curl account label=%r browser=%s", acc.label, acc.browser)
+    # BUG-C 修复：同 upsert，立刻 warmup 该账号的 quota_cache
+    _schedule_account_quota_warmup(acc.label)
     return JSONResponse({
         "ok": True,
         "label": acc.label,
