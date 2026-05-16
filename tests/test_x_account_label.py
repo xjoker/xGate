@@ -174,6 +174,41 @@ class ImagesGenerationsXAccountLabelTests(unittest.TestCase):
         self.assertEqual(r.json()["error"]["code"], "account_label_disabled")
 
 
+class ImageStreamStartXAccountLabelTests(unittest.TestCase):
+    """0.3.3: /v1/images/stream/start 接受 X-Account-Label，预校验同 images/generations。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        _override_settings()
+        cls.client = TestClient(main_mod.app)
+
+    def setUp(self) -> None:
+        _setup_pool()
+
+    def test_stream_start_unknown_label_returns_400(self):
+        r = self.client.post(
+            "/v1/images/stream/start",
+            headers=_headers("ghost-stream"),
+            json={"prompt": "test", "model": "grok-imagine-image"},
+        )
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["error"]["code"], "account_label_not_found")
+
+    def test_stream_start_disabled_label_returns_400(self):
+        from mini_grok_api.accounts import Account
+        account_pool.upsert_account(Account(
+            label="stream-disabled", cookie="sso=x", user_agent="", browser="chrome142",
+            proxy="", statsig_id="", enabled=False, priority=1, weight=10,
+        ))
+        r = self.client.post(
+            "/v1/images/stream/start",
+            headers=_headers("stream-disabled"),
+            json={"prompt": "test", "model": "grok-imagine-image"},
+        )
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["error"]["code"], "account_label_disabled")
+
+
 class VideoStatusPostTests(unittest.TestCase):
     """0.3.2: GET /v1/videos/{id}/status 被删除，POST /v1/videos/status 取代。"""
 

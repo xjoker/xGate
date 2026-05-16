@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-05-16
+
+### Added
+- **`/v1/images/stream/start` 接受 X-Account-Label header**：完成 Phase 3 #3 的最后
+  一块拼图。整个连续生图 session 锁定该账号；endpoint 启动 worker 前同步预校验
+  label（不存在/禁用 → 400），避免 worker 内 raise 转 500。
+  - `ImageStreamWorker.start(force_label=...)` + `_force_label` 实例字段
+  - `_run()` 把 force_label 透传给 `gateway.stream_batches(force_label=...)`
+  - 至此所有用户面 endpoint 都支持 X-Account-Label：chat completions / video×2 /
+    quota×3 / chat-imagine / images/generations / **images/stream/start**
+
+### Tests
+- 312 passing（+2）：stream start 的 unknown label + disabled label strict 错误。
+
+### Phase 3 backlog 全部清完 ✓
+- ① /v1/auth/login 限流（0.3.1）
+- ② priority/weight 在线编辑（0.3.1）
+- ③ X-Account-Label header（0.3.1 + 0.3.2 + **0.3.3**）
+- ④ conversation_id sticky binding（0.3.2）
+- ⑤ GitHub Actions v5+（0.3.1）
+- ⑥ /v1/videos/status POST 化（0.3.2）
+- ⑦ per-account image quota（0.3.1）
+
 ## [0.3.2] - 2026-05-16
 
 ### Added

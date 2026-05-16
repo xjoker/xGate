@@ -53,6 +53,7 @@ class ImageStreamWorker:
         self._log_db: "LogDB | None" = None
         self._task_queue: "TaskQueue | None" = None
         self._mirror_task_id: str = ""
+        self._force_label: str | None = None
 
     def status(self) -> dict[str, Any]:
         s = self._status
@@ -79,12 +80,19 @@ class ImageStreamWorker:
         return self._status.running
 
     def start(self, gateway: "WsGateway", cfg: StreamConfig, log_db: "LogDB | None" = None,
-              task_queue: "TaskQueue | None" = None) -> str:
+              task_queue: "TaskQueue | None" = None,
+              force_label: str | None = None) -> str:
+        """启动连续生图 worker。
+
+        force_label: 0.3.3 起支持 X-Account-Label 透传 — 整个 stream session
+        固定走该账号；endpoint 调 start() 前已预校验过 label 合法性。
+        """
         if self._status.running:
             return self._status.session_id
         self._stop_event.clear()
         self._log_db = log_db
         self._task_queue = task_queue
+        self._force_label = force_label
         session_id = str(uuid.uuid4())
         self._status = StreamStatus(
             running=True,
@@ -148,6 +156,7 @@ class ImageStreamWorker:
                 interval_seconds=cfg.interval_seconds,
                 max_batches=cfg.max_rounds,
                 image_data=cfg.image_data,
+                force_label=self._force_label,
             ):
                 batch_ts = time.time()
                 duration_ms = int((batch_ts - batch_start) * 1000)
