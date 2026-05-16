@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-05-17
+
+### Security
+- **SAST round 5** — 3 项修复，0 已知 CVE：
+  - **P1 image_data 无界 DoS**：`ImageStreamStartRequest.image_data` 和
+    `VideoGenerationRequest.image_data` 加 `Field(max_length=20_000_000)` (20MB)。
+    持有 API key 的客户端 POST 数百 MB base64 → pydantic 直接 422，不再走到
+    FastAPI 内存接收
+  - **P2 mcp_session 内存泄漏**：`mcp_session.cleanup()` 函数定义已久但从未被
+    调用，长期运行内存累积。`_conversation_binding_cleanup_loop` 12h 一轮顺手
+    调用，统一清两个 in-memory 容器
+  - **P2 上游 Content-Type 盲信透传 XSS**：`/v1/files/proxy` 和
+    `/v1/grok-files/download` 把 `assets.grok.com` 返回的 Content-Type 原样
+    转给浏览器；若 CDN 被污染返回 `text/html`，浏览器会渲染恶意 JS。新 helper
+    `_safe_proxy_content_type` 白名单 `image/* video/* audio/* json octet-stream`，
+    其它一律降级 `application/octet-stream`（浏览器走下载而非渲染）
+
+### Tests
+- 318 → 328 passing (+10)：tests/test_sast_round5.py 覆盖三项修复
+
 ## [0.3.6] - 2026-05-17
 
 ### Fixed

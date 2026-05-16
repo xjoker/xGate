@@ -77,7 +77,8 @@ class ImageStreamStartRequest(BaseModel):
     interval_seconds: float = Field(default=5.0, ge=1.0, le=3600.0)
     max_rounds: int = Field(default=-1, ge=-1)
     max_images: int = Field(default=0, ge=0)  # 0=不限；>0 时按图片数严格停止
-    image_data: str | None = None
+    # SAST round 5 P1: 限制 base64 大小防 OOM。20MB base64 ≈ 15MB 原图，足够 1024x1024 高质量
+    image_data: str | None = Field(default=None, max_length=20_000_000)
 
 
 class TaskQueueAddRequest(BaseModel):
@@ -94,7 +95,8 @@ class VideoGenerationRequest(BaseModel):
     resolution: str = "480p"
     duration: str = "6s"
     aspect_ratio: str = "2:3"
-    image_data: str | None = None
+    # SAST round 5 P1: 限制 base64 大小防 OOM
+    image_data: str | None = Field(default=None, max_length=20_000_000)
 
 
 class OpenAIError(BaseModel):
