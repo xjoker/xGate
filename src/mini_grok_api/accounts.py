@@ -751,9 +751,17 @@ class AccountPool:
                 )
 
     def delete_account(self, label: str) -> bool:
-        """删除账号，返回是否存在（True=删了，False=不存在）。"""
+        """删除账号，返回是否存在（True=删了，False=不存在）。
+
+        SAST round 4 (P3) 补强：同事务清理 `conversation_account_map` 中绑定到
+        该 label 的孤儿行，避免 `/admin/conversation-bindings` 列出已删账号的
+        历史 binding（数据保留/隐私）。
+        """
         with self._connect() as conn:
             cur = conn.execute("DELETE FROM accounts WHERE label=?", (label,))
+            conn.execute(
+                "DELETE FROM conversation_account_map WHERE account_label=?", (label,),
+            )
             return cur.rowcount > 0
 
     # ── import_from_settings ──────────────────────────────────────────────────

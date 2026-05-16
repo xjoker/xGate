@@ -1,6 +1,6 @@
 [project]
 name = "xgate"
-version = "0.3.4"
+version = "0.3.5"
 description = "OpenAI-compatible API gateway for xAI Grok web with built-in chat/image/video, web admin and FlareSolverr-based CF auto-refresh."
 readme = "README.md"
 requires-python = ">=3.13"
