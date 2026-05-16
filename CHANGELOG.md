@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5] - 2026-05-17
+
+### Security
+- **SAST round 4** — 三个修复 + 0 known CVE：
+  - **P2-1** `_VideoStatusRequest.video_id` 加 `Field(min_length=1, max_length=128,
+    pattern=r"^[A-Za-z0-9_-]+$")`，关掉 `get_video_link` 中 `video_id` 被拼成路径后
+    `exists()` 探测任意文件 + `read_text()` 读 `.url` 后缀任意文件的攻击面（需 API Key
+    才能触发，但既然有 pydantic 校验白名单，零成本堵死）
+  - **P2-2** conftest `_isolate_settings_disk_writes` fixture 退出时强制还原
+    `settings_store._settings` 到入口快照值，覆盖测试代码绕过 `update()` 直接写
+    `_settings` 的情况（如 `_override_settings` 在 setUpClass 改 api_key 不还原），
+    彻底消除跨测试 settings 状态污染
+  - **P3** `AccountPool.delete_account` 同事务级联清理 `conversation_account_map`
+    中绑定到该账号的孤儿行，避免 `/admin/conversation-bindings` 列出已删账号的
+    历史 binding（数据保留 / 隐私收紧）
+
+### Tests
+- 314 → 316 passing：
+  - `test_post_endpoint_path_traversal_blocked`（5 种路径遍历 payload 全 422）
+  - `test_post_endpoint_empty_video_id_returns_422`（替代旧的 400 invalid_video_id）
+  - `test_delete_account_cascades_to_binding`（级联清理 + 不影响其他 label）
+
 ## [0.3.4] - 2026-05-17
 
 ### Fixed

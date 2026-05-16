@@ -226,15 +226,21 @@ class VideoStatusPostTests(unittest.TestCase):
         # FastAPI 路由未注册 → 404；405 也接受（如果有其他通配）
         self.assertIn(r.status_code, (404, 405))
 
-    def test_post_endpoint_validates_body(self):
+    def test_post_endpoint_empty_video_id_returns_422(self):
+        """v0.3.5: pydantic Field(min_length=1) → 空 video_id 直接 422（防路径遍历）"""
         r = self.client.post("/v1/videos/status", headers=_headers(), json={"video_id": ""})
-        self.assertEqual(r.status_code, 400)
-        self.assertEqual(r.json()["error"]["code"], "invalid_video_id")
+        self.assertEqual(r.status_code, 422)
 
     def test_post_endpoint_missing_body_returns_422(self):
         r = self.client.post("/v1/videos/status", headers=_headers(), json={})
         # pydantic missing field → 422
         self.assertEqual(r.status_code, 422)
+
+    def test_post_endpoint_path_traversal_blocked(self):
+        """SAST round 4 P2-1: video_id 含路径遍历字符 → 422（pattern 拒）"""
+        for bad in ("../../../etc/passwd", "abc/def", "abc.mp4", "x; rm -rf /", "abc..def"):
+            r = self.client.post("/v1/videos/status", headers=_headers(), json={"video_id": bad})
+            self.assertEqual(r.status_code, 422, f"应拒绝 {bad!r}")
 
 
 if __name__ == "__main__":

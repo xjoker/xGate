@@ -55,12 +55,17 @@ def _isolate_settings_disk_writes(monkeypatch):
     `data/config/mini.toml` 改写。settings_store.update() 改为只更新内存
     `_settings`，不调用 save_settings。
 
+    SAST round 4 (P2-2) 补强：测试可能直接写 `_ss._settings = ...`（如
+    `_override_settings` helper 用类 setUpClass 改 api_key 后不还原），
+    fixture 退出时强制把 `_settings` 还原到本测试开始前的值，避免跨测试污染。
+
     任何依赖「update 后下次 get() 能读到新值」的测试仍然 work（内存更新到位）；
     只是磁盘上的 mini.toml 不会被污染。
     """
     from dataclasses import replace as _dc_replace
     from mini_grok_api import main as main_mod
     _ss = main_mod.settings_store  # singleton 在 main.py 创建
+    _original_settings = _ss.get()  # 记录入口快照
 
     def _in_memory_update(**kwargs):
         new = _dc_replace(_ss.get(), **kwargs)
@@ -69,3 +74,5 @@ def _isolate_settings_disk_writes(monkeypatch):
 
     monkeypatch.setattr(_ss, "update", _in_memory_update)
     yield
+    # P2-2 还原：即使测试代码绕过 update() 直接写 _settings，也强制恢复
+    _ss._settings = _original_settings  # type: ignore[attr-defined]

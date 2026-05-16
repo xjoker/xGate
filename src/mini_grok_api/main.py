@@ -21,7 +21,7 @@ from contextlib import asynccontextmanager
 from fastapi import Cookie, Depends, FastAPI, Form, Header, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -259,7 +259,7 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
 
 app = FastAPI(
     title="xGate API",
-    version="0.3.4",
+    version="0.3.5",
     lifespan=_lifespan,
     description=(
         "**xAI Grok → OpenAI-compatible API 网关**\n\n"
@@ -2108,7 +2108,9 @@ async def videos_generate(
 
 
 class _VideoStatusRequest(BaseModel):
-    video_id: str
+    # Grok video id 形如 UUID / 短 hex 串。限定字符 + 长度防 get_video_link 路径遍历：
+    # 历史 bug：video_id 直接拼到 Path → exists() 探测任意路径，url_file.read_text 可读 .url 后缀任意文件。
+    video_id: str = Field(..., min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 @app.post("/v1/videos/status", tags=[_TAG_VIDEO], summary="轮询视频生成状态",

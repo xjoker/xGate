@@ -95,6 +95,23 @@ class AccountPoolConversationBindingTests(unittest.TestCase):
         labels_in_order = [b["conversation_id"] for b in bindings]
         self.assertEqual(labels_in_order[0], "conv-new")
 
+    def test_delete_account_cascades_to_binding(self):
+        """SAST round 4 P3: delete_account 同事务清理 conversation_account_map。"""
+        from mini_grok_api.accounts import Account
+        account_pool.upsert_account(Account(
+            label="acc-to-purge", cookie="sso=x", user_agent="", browser="chrome142",
+            proxy="", statsig_id="", enabled=True, priority=1, weight=10,
+        ))
+        account_pool.set_conversation_binding("conv-bound-to-purge", "acc-to-purge")
+        # 同时绑定到另一个 label 的 binding 不该被影响
+        account_pool.set_conversation_binding("conv-other", "other-label")
+        # 删账号
+        self.assertTrue(account_pool.delete_account("acc-to-purge"))
+        # 它的 binding 应该没了
+        self.assertIsNone(account_pool.get_conversation_binding("conv-bound-to-purge"))
+        # 其他 label 的 binding 不受影响
+        self.assertEqual(account_pool.get_conversation_binding("conv-other"), "other-label")
+
 
 class ExtractConversationIdTests(unittest.TestCase):
     def _req(self, **kwargs):
