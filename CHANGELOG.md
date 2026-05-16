@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- 账号管理「编辑」入口：复用账号 modal，支持只改 priority/weight 而保留旧 cookie
+  （后端 `_AccountUpsertRequest.cookie` 改为可选；为空 + label 已存在则保留旧值）
+- 账号管理表格新增「额度概览」列，按账号 × 模型展示后台 poll 缓存的剩余配额
+- `/v1/quota/chat` `/v1/quota` `/admin/dashboard` 响应新增 `per_account` 字段，
+  完全复用账号池现有 quota_cache，**不增加上游 Grok 请求量**
+- 首页配额监控加「按账号展开」toggle（≥ 2 个账号时显示）
+
+### Fixed
+- 设置页「保存配置」silent failure：`apiForm` 不抛非 2xx，导致 CSRF 失败时仍弹「已保存」
+  → 新增 `apiFormJson` 与 `api()` 行为对齐，`saveConfig` / `importCurl` 都走它
+- 账号管理 modal 背景点击关闭事件由 `document` 级改为绑在 modal 自身，
+  避免事件冒泡导致的误关
+- 「修改账号有问题」：之前 admin UI 只能 +添加/删除/启停，priority/weight 必须
+  删了重建。本次补齐 edit modal，对齐 Phase 3 backlog #2
+
+### Changed
+- 设置页 UI 拆分单/多用户：
+  - 「导入 cURL」→「快速导入 default 账号」，明确告知此操作覆盖 default 账号
+  - 「手动配置」→「全局配置」，Cookie/UA/指纹移到下方 dashed border 区域
+    并明示这些字段是「快捷编辑 default 账号」，多账号应改用「账号管理」
+
+
 ## [0.2.0] - 2026-05-14
 
 ### Added
