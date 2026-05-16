@@ -392,6 +392,62 @@ class AccountPool:
                 return None
             return cache.get(model_id)
 
+    # ── image quota（special key）────────────────────────────────────────────
+    # 图片配额与 chat 不同：上游 model_name 候选不确定（aurora / grok-2-aurora / ...），
+    # 探测命中后值复用全局 hint。缓存键固定为 "__image__"，避免与 chat model_id 冲突。
+    _IMAGE_QUOTA_KEY = "__image__"
+
+    def update_image_quota(
+        self,
+        label: str,
+        *,
+        model_name: str,
+        remaining: int,
+        total: int,
+        reset_at: float,
+    ) -> None:
+        """更新某账号的图片配额缓存（写到 quota_cache_json['__image__']）。
+
+        额外存 model_name 字段，记录此账号上次成功的 candidate（debug 用，
+        全局 hint 由调用方维护以减少探测成本）。
+        """
+        now = time.time()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT quota_cache_json FROM accounts WHERE label=?", (label,)
+            ).fetchone()
+            if row is None:
+                return
+            try:
+                cache: dict = json.loads(row["quota_cache_json"] or "{}")
+            except Exception:
+                cache = {}
+            cache[self._IMAGE_QUOTA_KEY] = {
+                "model_name": model_name,
+                "remaining": remaining,
+                "total": total,
+                "reset_at": reset_at,
+                "fetched_at": now,
+            }
+            conn.execute(
+                "UPDATE accounts SET quota_cache_json=? WHERE label=?",
+                (json.dumps(cache, ensure_ascii=False), label),
+            )
+
+    def get_image_quota(self, label: str) -> dict | None:
+        """读取某账号图片配额缓存，无缓存返回 None。"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT quota_cache_json FROM accounts WHERE label=?", (label,)
+            ).fetchone()
+            if row is None:
+                return None
+            try:
+                cache: dict = json.loads(row["quota_cache_json"] or "{}")
+            except Exception:
+                return None
+            return cache.get(self._IMAGE_QUOTA_KEY)
+
     def _is_quota_low(self, label: str, model_id: str, threshold: float = 0.05) -> bool:
         """判断某账号某模型配额是否低于阈值（默认 5%）。
 

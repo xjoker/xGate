@@ -728,6 +728,12 @@ _QUOTA_POLL_INTER_ACCOUNT = 5   # 跨账号 sleep（秒）
 _REVALIDATE_INTERVAL = 1800     # auto_disabled 重验证间隔（30 分钟）
 
 
+# 全局 image quota model_name hint：首次跑 4-candidate probe 成功后写入，
+# 之后所有账号每轮只查这一个 model_name（4×N → 1×N，节省上游成本）。
+# 进程重启后从 0 重建，无需持久化（探测开销低）。
+_IMAGE_QUOTA_MODEL_HINT: str | None = None
+
+
 async def _account_quota_poll_loop() -> None:
     """每 300 秒遍历所有 enabled 账号 × 注册模型，调 query_rate_limits 更新缓存。
 
@@ -735,6 +741,7 @@ async def _account_quota_poll_loop() -> None:
     失败：捕获异常记日志后跳过，不影响其他账号/模型。
     image_model 跳过（图片配额由 query_image_rate_limits 处理，key 不同）。
     """
+    global _IMAGE_QUOTA_MODEL_HINT
     while True:
         try:
             specs = [s for s in get_model_specs() if not s.image_model]
@@ -769,6 +776,37 @@ async def _account_quota_poll_loop() -> None:
                             info.label, spec.model_id, exc,
                         )
                     await asyncio.sleep(_QUOTA_POLL_INTER_MODEL)
+                # ── 图片配额（每账号 1 次）─────────────────────────────────
+                try:
+                    if _IMAGE_QUOTA_MODEL_HINT:
+                        img_raw = await query_rate_limits(shadow, model_name=_IMAGE_QUOTA_MODEL_HINT)
+                        img_valid = (
+                            {"model_name": _IMAGE_QUOTA_MODEL_HINT, **img_raw}
+                            if img_raw and "remainingQueries" in img_raw else None
+                        )
+                    else:
+                        img_result = await query_image_rate_limits(shadow)
+                        img_valid = next(
+                            (c for c in img_result["candidates"] if "remaining" in c),
+                            None,
+                        )
+                        if img_valid:
+                            _IMAGE_QUOTA_MODEL_HINT = img_valid["model_name"]
+                            logger.info("image quota model hint cached: %s", _IMAGE_QUOTA_MODEL_HINT)
+                    if img_valid:
+                        remaining = int(img_valid.get("remaining") or img_valid.get("remainingQueries") or 0)
+                        total = int(img_valid.get("total") or img_valid.get("totalQueries") or remaining or 0)
+                        wait = float(img_valid.get("wait_time_seconds") or img_valid.get("waitTimeSeconds") or 0)
+                        account_pool.update_image_quota(
+                            info.label,
+                            model_name=img_valid["model_name"],
+                            remaining=remaining,
+                            total=total,
+                            reset_at=time.time() + wait,
+                        )
+                        polled += 1
+                except Exception as exc:
+                    logger.warning("image quota poll failed: account=%s err=%s", info.label, exc)
                 await asyncio.sleep(_QUOTA_POLL_INTER_ACCOUNT)
             if polled:
                 logger.info("quota poll: updated %d account-model quota entries", polled)
@@ -2891,7 +2929,36 @@ async def image_quota(settings: Annotated[Settings, Depends(_settings)]) -> JSON
         result = await query_image_rate_limits(acq.settings)
     valid = [c for c in result["candidates"] if "remaining" in c]
     result["best"] = valid[0] if valid else None
+    # 按账号视图（来自后台 poll cache，不发起新探测）
+    result["per_account"] = _per_account_image_quota_snapshot()
     return JSONResponse(result)
+
+
+def _per_account_image_quota_snapshot() -> dict[str, dict]:
+    """按账号读图片配额缓存（不发起新请求）。
+
+    返回 {label: {model_name, remaining, total, used, used_pct, fetched_at}}。
+    无缓存或 total<=0 的账号不出现在 map 中。
+    """
+    result: dict[str, dict] = {}
+    for info in account_pool.list_accounts():
+        q = account_pool.get_image_quota(info.label)
+        if not q:
+            continue
+        remaining = int(q.get("remaining") or 0)
+        total = int(q.get("total") or remaining or 0)
+        if total <= 0:
+            continue
+        used = max(total - remaining, 0)
+        result[info.label] = {
+            "model_name": q.get("model_name", ""),
+            "remaining": remaining,
+            "total": total,
+            "used": used,
+            "used_pct": round(used / total * 100, 1),
+            "fetched_at": q.get("fetched_at"),
+        }
+    return result
 
 
 class _ChatImagineRequest(BaseModel):
@@ -3354,6 +3421,7 @@ async def admin_dashboard(settings: Annotated[Settings, Depends(_settings)]) -> 
         "version": app.version,
         "model_quotas": model_quotas,
         "image_quota": image_quota,
+        "per_account_image_quota": _per_account_image_quota_snapshot(),
         "per_account": _per_account_chat_quotas_snapshot(chat_specs),
         "tasks": {**task_stats, "total_moderated": total_moderated},
         "recent_tasks": recent_tasks,

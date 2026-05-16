@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`/v1/auth/login` 限流（slowapi 内存后端，10 次/分钟/IP）**：超限返回 429 +
   `Retry-After` header + `error.type=rate_limit_error, code=login_rate_limited`；
   正常响应也带 `X-RateLimit-*` 头方便客户端预判。对齐 Phase 3 backlog #1。
+- **per-account image quota**：后台 quota poll loop 每账号额外查一次图片配额，
+  缓存到 `accounts.quota_cache_json['__image__']`；全局 `_IMAGE_QUOTA_MODEL_HINT`
+  避免对每个账号重跑 4-candidate 探测（首次跑成功后所有账号复用）。
+  - `account_pool.update_image_quota / get_image_quota` 新方法
+  - `/v1/quota/image` 响应新增 `per_account` 字段
+  - `/admin/dashboard` 响应新增 `per_account_image_quota` 字段
+  - 首页「按账号展开」视图为每个账号加图片配额 chip（粉色，区别于 chat chip）
 
 ### Fixed
 - 设置页「保存配置」silent failure：`apiForm` 不抛非 2xx，导致 CSRF 失败时仍弹「已保存」
