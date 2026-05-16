@@ -2724,7 +2724,7 @@ async def chat_quota(settings: Annotated[Settings, Depends(_settings)]) -> JSONR
         return _error_response("GROK_COOKIE not configured", 400, code="missing_grok_cookie")
     specs = [s for s in get_model_specs() if not s.image_model]
     if not specs:
-        return JSONResponse({"chat_quotas": []})
+        return JSONResponse({"chat_quotas": [], "per_account": {}})
 
     with account_pool.acquire() as acq:
         async def _one(spec: ModelSpec) -> dict:
@@ -2744,7 +2744,48 @@ async def chat_quota(settings: Annotated[Settings, Depends(_settings)]) -> JSONR
                 return {**base, "error": str(exc)}
 
         out = await asyncio.gather(*[_one(s) for s in specs])
-    return JSONResponse({"chat_quotas": list(out)})
+    return JSONResponse({
+        "chat_quotas": list(out),
+        "per_account": _per_account_chat_quotas_snapshot(specs),
+    })
+
+
+def _per_account_chat_quotas_snapshot(specs: list[ModelSpec]) -> dict[str, list[dict]]:
+    """从账号池缓存读取按账号 × 模型的 chat quota 快照（不发起新请求）。
+
+    缓存由后台 _account_quota_poll_loop 周期填充（默认 5 分钟）。
+    返回 {label: [{"model_id", "mode_id", "label" (display name),
+                   "remaining", "total", "used", "used_pct", "fetched_at"}, ...]}
+    无缓存的账号不会出现在 map 中。
+    """
+    result: dict[str, list[dict]] = {}
+    cache_list = account_pool.list_account_quotas()  # [{label, quotas: {model_id: {...}}}, ...]
+    spec_by_id = {s.model_id: s for s in specs}
+    for entry in cache_list:
+        label = entry["label"]
+        quotas = entry["quotas"] or {}
+        items: list[dict] = []
+        for model_id, q in quotas.items():
+            spec = spec_by_id.get(model_id)
+            if spec is None:
+                continue
+            remaining = int(q.get("remaining") or 0)
+            total = int(q.get("total") or remaining or 0)
+            used = max(total - remaining, 0)
+            pct = round(used / total * 100, 1) if total > 0 else 0.0
+            items.append({
+                "model_id": model_id,
+                "mode_id": spec.mode_id,
+                "label": spec.name,
+                "remaining": remaining,
+                "total": total,
+                "used": used,
+                "used_pct": pct,
+                "fetched_at": q.get("fetched_at"),
+            })
+        if items:
+            result[label] = items
+    return result
 
 
 @app.post("/v1/quota/image", tags=[_TAG_QUOTA], summary="探测图片生成额度",
@@ -2900,7 +2941,45 @@ async def quota_check(settings: Annotated[Settings, Depends(_settings)]) -> JSON
         "quotas": quotas,
         "image_blocked": image_blocked,
         "blocked_reason": "quota ≥ 90%" if image_blocked else None,
+        "per_account": _per_account_modes_snapshot(),
     })
+
+
+def _per_account_modes_snapshot() -> dict[str, dict]:
+    """从账号池缓存读取每账号 auto/fast 模式聚合（不发起新请求）。
+
+    选定 auto 与 fast 两个固定 mode_id（_QUOTA_MODES 的 key），从注册模型里找匹配。
+    返回 {label: {mode_id: {remaining, total, used_pct, fetched_at}}}。
+    """
+    result: dict[str, dict] = {}
+    cache_list = account_pool.list_account_quotas()
+    # 按 mode_id 反查 model_id（一对多时取第一个匹配）
+    mode_to_model: dict[str, str] = {}
+    for s in get_model_specs():
+        if s.image_model:
+            continue
+        if s.mode_id in _QUOTA_MODES and s.mode_id not in mode_to_model:
+            mode_to_model[s.mode_id] = s.model_id
+    for entry in cache_list:
+        label = entry["label"]
+        quotas = entry["quotas"] or {}
+        modes: dict[str, dict] = {}
+        for mode_id, model_id in mode_to_model.items():
+            q = quotas.get(model_id)
+            if not q:
+                continue
+            remaining = int(q.get("remaining") or 0)
+            total = int(q.get("total") or remaining or 0)
+            used = max(total - remaining, 0)
+            pct = round(used / total * 100, 1) if total > 0 else 0.0
+            modes[mode_id] = {
+                "remaining": remaining, "total": total,
+                "used": used, "used_pct": pct,
+                "fetched_at": q.get("fetched_at"),
+            }
+        if modes:
+            result[label] = modes
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -3175,10 +3254,13 @@ async def admin_dashboard(settings: Annotated[Settings, Depends(_settings)]) -> 
     snap = monitor.snapshot()
     img_quota_valid = [c for c in img_quota_result["candidates"] if "remaining" in c]
     image_quota = img_quota_valid[0] if img_quota_valid else None
+    # 按账号 × 模型的 chat 配额快照（复用后台 poll loop 已缓存值，零额外上游请求）
+    per_account_quotas = _per_account_chat_quotas_snapshot(chat_specs)
     return JSONResponse({
         "version": app.version,
         "model_quotas": model_quotas,
         "image_quota": image_quota,
+        "per_account_quotas": per_account_quotas,
         "tasks": {**task_stats, "total_moderated": total_moderated},
         "recent_tasks": recent_tasks,
         "logs": log_stats,
