@@ -55,6 +55,8 @@ class _WsJob:
     image_data: str | None = None
     moderated_count: int = 0      # 累计被审核数（部分审核也会增加）
     total_attempted: int = 0      # 累计 slot 总数
+    # X-Account-Label 透传：worker 内 acquire() 时强制走该账号；None=默认 LRU
+    force_label: str | None = None
 
 
 class WsGateway:
@@ -100,8 +102,14 @@ class WsGateway:
         enable_pro: bool,
         session_dir: Path,
         image_data: str | None = None,
+        force_label: str | None = None,
     ) -> list[ImageResult]:
-        """一次性生图：提交 job，等待第一批完成后返回。"""
+        """一次性生图：提交 job，等待第一批完成后返回。
+
+        force_label: X-Account-Label 透传；非 None 时强制走该账号（pool.acquire
+        的 strict 模式：账号不存在/禁用 → raise UnknownAccountError /
+        AccountDisabledError，上层应在调用前预校验避免 worker raise 500）。
+        """
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[list[ImageResult]] = loop.create_future()
         stop = asyncio.Event()
@@ -133,6 +141,7 @@ class WsGateway:
             on_error=on_error,
             on_done=on_done,
             image_data=image_data,
+            force_label=force_label,
         )
         await self._queue.put(job)
         return await fut
@@ -148,6 +157,7 @@ class WsGateway:
         max_batches: int,
         image_data: str | None = None,
         stats_sink: dict | None = None,  # 可选：用于回传 moderated/total_attempted 累计
+        force_label: str | None = None,   # X-Account-Label 透传（同 generate_images）
     ) -> AsyncGenerator[list[ImageResult], None]:
         """持续生图：提交 job，通过 async generator yield 每批结果。
 
@@ -176,6 +186,7 @@ class WsGateway:
             on_error=on_error,
             on_done=on_done,
             image_data=image_data,
+            force_label=force_label,
         )
         await self._queue.put(job)
 
@@ -219,8 +230,12 @@ class WsGateway:
     async def _run_job(self, job: _WsJob) -> None:
         """执行单个 job，含断线重连逻辑。"""
         # 优先使用 account_pool（Phase 1 多账号），降级到 settings_getter（兼容无池场景）
+        # job.force_label 来自 endpoint X-Account-Label 透传；endpoint 已预校验，
+        # 但 race condition 仍可能 raise（admin 同时删账号）— 由外层 try/except 兜底。
         if self._account_pool is not None:
-            _acq_ctx = self._account_pool.acquire(model_id="grok-imagine")
+            _acq_ctx = self._account_pool.acquire(
+                model_id="grok-imagine", force_label=job.force_label
+            )
             _acq = _acq_ctx.__enter__()
             settings: Settings = _acq.settings
         else:

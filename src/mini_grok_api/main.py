@@ -243,6 +243,7 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
     asyncio.create_task(_files_auto_sync_loop())
     asyncio.create_task(_account_quota_poll_loop())
     asyncio.create_task(_account_revalidate_loop())
+    asyncio.create_task(_conversation_binding_cleanup_loop())
     if settings_store.get().mcp_enabled:
         async with mcp.session_manager.run():
             yield
@@ -258,7 +259,7 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
 
 app = FastAPI(
     title="xGate API",
-    version="0.3.1",
+    version="0.3.2",
     lifespan=_lifespan,
     description=(
         "**xAI Grok → OpenAI-compatible API 网关**\n\n"
@@ -860,6 +861,21 @@ def _minimal_settings_for_poll(acc: "Account") -> Settings:
     return _as_settings(settings_store.get(), acc)
 
 
+_CONVERSATION_BINDING_CLEANUP_INTERVAL = 12 * 3600  # 12 小时一轮
+
+
+async def _conversation_binding_cleanup_loop() -> None:
+    """定期清理过期 conversation_account_map 行（TTL 7 天，在 accounts.py 里定义）。"""
+    while True:
+        try:
+            deleted = account_pool.cleanup_old_conversation_bindings()
+            if deleted:
+                logger.info("conversation binding cleanup: pruned %d expired rows", deleted)
+        except Exception:
+            logger.exception("conversation binding cleanup loop error")
+        await asyncio.sleep(_CONVERSATION_BINDING_CLEANUP_INTERVAL)
+
+
 async def _poll_one_account_quota(label: str) -> None:
     """对单个账号跑一次 chat + image quota poll，写入 quota_cache_json。
 
@@ -1042,6 +1058,42 @@ def _require_signed_or_auth(
         request, settings, authorization, x_api_key,
         xgate_session, xgate_csrf_cookie, csrf_header,
     )
+
+
+def _extract_conversation_id(req: "ChatCompletionRequest") -> str | None:
+    """从 chat completions 请求里抽取 conversation_id（用于 sticky binding）。
+
+    来源优先级（0.3.2）：
+    1. `metadata.conversation_id`（OpenAI 客户端常用扩展字段）
+    2. `user` 字段（OpenAI 标准 end-user 标识，部分客户端复用为会话 ID）
+
+    返回 None 表示不绑定（每次都走 LRU）。结果会被 trim / truncate 到 256 字符防滥用。
+    """
+    raw: str | None = None
+    md = getattr(req, "metadata", None) or {}
+    if isinstance(md, dict):
+        v = md.get("conversation_id") or md.get("conversationId")
+        if v:
+            raw = str(v)
+    if not raw and getattr(req, "user", None):
+        raw = str(req.user)
+    if not raw:
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    return raw[:256]
+
+
+def _persist_conversation_binding(conv_id: str | None, label: str) -> None:
+    """选号成功后写 sticky binding；跳过 fallback 伪 label（_settings_fallback）。"""
+    if not conv_id or not label or label.startswith("_"):
+        return
+    try:
+        account_pool.set_conversation_binding(conv_id, label)
+    except Exception as exc:
+        # binding 写失败不应该影响主请求路径
+        logger.warning("set_conversation_binding failed: %s", exc)
 
 
 def _account_label_header(
@@ -2055,19 +2107,28 @@ async def videos_generate(
     return JSONResponse({"ok": True, "video_id": video_id})
 
 
-@app.get("/v1/videos/{video_id}/status", tags=[_TAG_VIDEO], summary="轮询视频生成状态",
-         description=(
-             "调用 Grok `POST /rest/media/post/create-link` 查询视频是否生成完毕。\n\n"
-             "- `ready=false`：仍在生成中，建议 5 秒后重试\n"
-             "- `ready=true`：返回 `download_url`，可直接下载 / 播放视频"
-         ),
-         dependencies=[Depends(_require_api_key)])
+class _VideoStatusRequest(BaseModel):
+    video_id: str
+
+
+@app.post("/v1/videos/status", tags=[_TAG_VIDEO], summary="轮询视频生成状态",
+          description=(
+              "调用 Grok `POST /rest/media/post/create-link` 查询视频是否生成完毕。\n\n"
+              "**请求体**：`{\"video_id\": \"<id>\"}`\n\n"
+              "- `ready=false`：仍在生成中，建议 5 秒后重试\n"
+              "- `ready=true`：返回 `download_url`，可直接下载 / 播放视频\n\n"
+              "v0.3.2 起 GET `/v1/videos/{id}/status` 已删除，请用 POST。"
+          ),
+          dependencies=[Depends(_require_api_key)])
 async def video_status(
-    video_id: str,
+    req: _VideoStatusRequest,
     settings: Annotated[Settings, Depends(_settings)],
     account_label: Annotated[str | None, Depends(_account_label_header)] = None,
 ) -> JSONResponse:
     """轮询视频生成状态，ready=true 时返回 download_url。"""
+    video_id = req.video_id.strip()
+    if not video_id:
+        return _error_response("video_id is required", 400, code="invalid_video_id")
     with account_pool.acquire(model_id="grok-imagine-video", force_label=account_label) as acq:
         try:
             media_url = await get_video_link(acq.settings, video_id)
@@ -2103,9 +2164,8 @@ async def video_status(
 async def images_generations(
     req: ImageGenerationRequest,
     settings: Annotated[Settings, Depends(_settings)],
+    account_label: Annotated[str | None, Depends(_account_label_header)] = None,
 ) -> JSONResponse:
-    # TODO: X-Account-Label 透传给 ws_gateway（需要 _WsJob 加 force_label 字段 + 串行 worker
-    # 内部 acquire 时使用）。当前 image gen 仍走 LRU。
     model_id = req.model or settings.default_image_model
     spec = get_model(model_id)
     if spec is None or not spec.image_model:
@@ -2118,11 +2178,19 @@ async def images_generations(
             400,
             code="unsupported_parameter",
         )
+    # X-Account-Label 预校验 — 避免 ws_gateway worker 内 raise 转成 500
+    # （race condition：admin 在 ws 排队期间删账号 → worker raise 仍可能 500；可接受）
+    if account_label:
+        _existing = account_pool.get_account(account_label)
+        if _existing is None:
+            raise UnknownAccountError(account_label)
+        if not _existing.enabled:
+            raise AccountDisabledError(account_label, status="manually_disabled")
 
     prompt = req.prompt.strip()
     aspect_ratio = resolve_aspect_ratio(req.size)
-    logger.info("image: model=%s prompt=%r aspect=%s n=%d",
-                model_id, prompt[:80], aspect_ratio, req.n)
+    logger.info("image: model=%s prompt=%r aspect=%s n=%d label=%s",
+                model_id, prompt[:80], aspect_ratio, req.n, account_label or "(lru)")
     session_id = str(__import__("uuid").uuid4())
     session_dir = _init_session(session_id, prompt=prompt, source="api", aspect_ratio=aspect_ratio)
     t0 = time.monotonic()
@@ -2133,6 +2201,7 @@ async def images_generations(
             aspect_ratio=aspect_ratio,
             enable_pro=spec.enable_pro,
             session_dir=session_dir,
+            force_label=account_label,
         )
         images = sorted(batch[: req.n], key=lambda r: r.order)
     except GrokClientError as exc:
@@ -2206,8 +2275,24 @@ async def chat_completions(
     if not prompt:
         return _error_response("message content cannot be empty", 400, code="empty_message")
 
+    # 0.3.2: conversation_id sticky binding — 优先级 X-Account-Label > sticky > LRU
+    # 注意：X-Account-Label 总是赢；sticky 仅在 client 没显式传 label 时生效。
+    conv_id = _extract_conversation_id(req)
+    if not account_label and conv_id:
+        bound = account_pool.get_conversation_binding(conv_id)
+        if bound is not None:
+            # 校验 binding 有效（账号仍存在且 enabled），否则静默回退到 LRU
+            _bacc = account_pool.get_account(bound)
+            if _bacc is not None and _bacc.enabled:
+                account_label = bound
+                logger.info("chat: sticky binding hit conv_id=%s → label=%s", conv_id[:32], bound)
+            else:
+                logger.warning("chat: sticky binding stale (conv_id=%s, label=%s不可用)，回退 LRU",
+                               conv_id[:32], bound)
+
     monitor.record_start()
-    logger.info("chat: model=%s stream=%s prompt_len=%d", req.model, req.stream, len(prompt))
+    logger.info("chat: model=%s stream=%s prompt_len=%d label=%s",
+                req.model, req.stream, len(prompt), account_label or "(lru)")
     include_usage = bool(req.stream_options and req.stream_options.include_usage)
     max_out = req.max_completion_tokens or req.max_tokens
 
@@ -2224,6 +2309,7 @@ async def chat_completions(
         if has_tools:
             async def generate_tools_as_stream() -> AsyncGenerator[str, None]:
                 with account_pool.acquire(model_id=req.model, force_label=account_label) as acq:
+                    _persist_conversation_binding(conv_id, acq.label)
                     try:
                         content = await complete_chat(acq.settings, message=prompt, mode_id=spec.mode_id)
                         tc = parse_tool_call(content)
@@ -2316,6 +2402,7 @@ async def chat_completions(
             # max_out 是目标 token 数；用 4 字符≈1 token 的粗估转成字符上限
             char_budget = max_out * 4 if max_out is not None else None
             with account_pool.acquire(model_id=req.model, force_label=account_label) as acq:
+                _persist_conversation_binding(conv_id, acq.label)
                 try:
                     async for delta in stream_chat(acq.settings, message=prompt, mode_id=spec.mode_id):
                         if delta.done:
@@ -2388,6 +2475,7 @@ async def chat_completions(
     _chat_acq_label = ""
     with account_pool.acquire(model_id=req.model, force_label=account_label) as acq:
         _chat_acq_label = acq.label
+        _persist_conversation_binding(conv_id, acq.label)
         try:
             content = await complete_chat(acq.settings, message=prompt, mode_id=spec.mode_id)
         except GrokClientError as exc:
@@ -3752,6 +3840,19 @@ async def admin_list_accounts() -> JSONResponse:
         d["quota_cache"] = quota_map.get(a.label, {})
         account_dicts.append(d)
     return JSONResponse({"accounts": account_dicts})
+
+
+@app.get("/admin/conversation-bindings", tags=[_TAG_ADMIN],
+         summary="列出 conversation_id → account_label sticky binding",
+         description=(
+             "0.3.2 新增：调试用。返回当前 conversation_account_map 表里最近的 binding。\n\n"
+             "binding 由 /v1/chat/completions 自动写入（基于 req.metadata.conversation_id "
+             "或 req.user）。TTL 7 天，后台 cleanup loop 12h 跑一次。"
+         ),
+         dependencies=[Depends(_require_api_key)])
+async def admin_list_conversation_bindings(limit: int = 100) -> JSONResponse:
+    rows = account_pool.list_conversation_bindings(limit=max(1, min(limit, 1000)))
+    return JSONResponse({"bindings": rows, "ttl_seconds": account_pool.CONVERSATION_TTL_SECONDS})
 
 
 @app.post("/admin/accounts", tags=[_TAG_ADMIN], summary="新增 / 更新 Grok 账号",

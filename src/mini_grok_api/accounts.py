@@ -239,6 +239,17 @@ class AccountPool:
                 );
                 CREATE INDEX IF NOT EXISTS idx_accounts_priority ON accounts(priority);
                 CREATE INDEX IF NOT EXISTS idx_accounts_status   ON accounts(status);
+
+                -- 0.3.2: conversation_id → account_label sticky binding
+                -- 让 chat 多轮对话固定走同一账号，避免 LRU 切号引发的 Grok 上下文失忆
+                CREATE TABLE IF NOT EXISTS conversation_account_map (
+                    conversation_id TEXT PRIMARY KEY,
+                    account_label   TEXT NOT NULL,
+                    created_at      REAL NOT NULL,
+                    last_seen       REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_conv_acct_last_seen
+                    ON conversation_account_map(last_seen);
             """)
 
     # ── 选号逻辑 ──────────────────────────────────────────────────────────────
@@ -480,6 +491,58 @@ class AccountPool:
             except Exception:
                 return None
             return cache.get(self._IMAGE_QUOTA_KEY)
+
+    # ── conversation → account sticky binding (0.3.2) ───────────────────────
+    # 让 chat 多轮对话固定走同一账号，避免 LRU 切号导致 Grok 上下文丢失。
+    # binding TTL 7 天；后台 cleanup loop 删过期行。
+    CONVERSATION_TTL_SECONDS = 7 * 86400
+
+    def get_conversation_binding(self, conversation_id: str) -> str | None:
+        """读取 conversation 当前绑定的 account_label；未绑定/过期 → None。"""
+        if not conversation_id:
+            return None
+        cutoff = time.time() - self.CONVERSATION_TTL_SECONDS
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT account_label FROM conversation_account_map"
+                " WHERE conversation_id=? AND last_seen > ?",
+                (conversation_id, cutoff),
+            ).fetchone()
+        return row["account_label"] if row else None
+
+    def set_conversation_binding(self, conversation_id: str, account_label: str) -> None:
+        """upsert binding，touch last_seen。"""
+        if not conversation_id or not account_label:
+            return
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO conversation_account_map"
+                " (conversation_id, account_label, created_at, last_seen)"
+                " VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(conversation_id) DO UPDATE SET"
+                "   account_label=excluded.account_label, last_seen=excluded.last_seen",
+                (conversation_id, account_label, now, now),
+            )
+
+    def cleanup_old_conversation_bindings(self) -> int:
+        """删除超过 TTL 的 binding；返回删除行数。"""
+        cutoff = time.time() - self.CONVERSATION_TTL_SECONDS
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM conversation_account_map WHERE last_seen <= ?", (cutoff,)
+            )
+            return cur.rowcount
+
+    def list_conversation_bindings(self, limit: int = 100) -> list[dict]:
+        """admin 调试用：列出最近的 binding。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT conversation_id, account_label, created_at, last_seen"
+                " FROM conversation_account_map ORDER BY last_seen DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     def _is_quota_low(self, label: str, model_id: str, threshold: float = 0.05) -> bool:
         """判断某账号某模型配额是否低于阈值（默认 5%）。

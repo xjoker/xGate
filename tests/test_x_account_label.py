@@ -134,5 +134,73 @@ class XAccountLabelHeaderTests(unittest.TestCase):
             self.assertNotIn("account_label", body["error"].get("code", ""))
 
 
+class ImagesGenerationsXAccountLabelTests(unittest.TestCase):
+    """POST /v1/images/generations 现在也支持 X-Account-Label header (0.3.2)。
+
+    endpoint 在提交 ws_gateway job 前预校验 label，避免 worker 内 raise 转 500。
+    实际生图不跑（依赖 Grok 上游），只验证 label 校验路径。
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        _override_settings()
+        cls.client = TestClient(main_mod.app)
+
+    def setUp(self) -> None:
+        _setup_pool()
+
+    def test_images_generations_unknown_label_returns_400(self):
+        r = self.client.post(
+            "/v1/images/generations",
+            headers=_headers("nonexistent"),
+            json={"prompt": "test", "model": "grok-imagine-image"},
+        )
+        self.assertEqual(r.status_code, 400)
+        body = r.json()
+        self.assertEqual(body["error"]["code"], "account_label_not_found")
+
+    def test_images_generations_disabled_label_returns_400(self):
+        from mini_grok_api.accounts import Account
+        account_pool.upsert_account(Account(
+            label="img-disabled", cookie="sso=x", user_agent="", browser="chrome142",
+            proxy="", statsig_id="", enabled=False, priority=1, weight=10,
+        ))
+        r = self.client.post(
+            "/v1/images/generations",
+            headers=_headers("img-disabled"),
+            json={"prompt": "test", "model": "grok-imagine-image"},
+        )
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["error"]["code"], "account_label_disabled")
+
+
+class VideoStatusPostTests(unittest.TestCase):
+    """0.3.2: GET /v1/videos/{id}/status 被删除，POST /v1/videos/status 取代。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        _override_settings()
+        cls.client = TestClient(main_mod.app)
+
+    def setUp(self) -> None:
+        _setup_pool()
+
+    def test_old_get_endpoint_returns_405_or_404(self):
+        """旧 GET endpoint 必须已不存在。"""
+        r = self.client.get("/v1/videos/some-id/status", headers=_headers())
+        # FastAPI 路由未注册 → 404；405 也接受（如果有其他通配）
+        self.assertIn(r.status_code, (404, 405))
+
+    def test_post_endpoint_validates_body(self):
+        r = self.client.post("/v1/videos/status", headers=_headers(), json={"video_id": ""})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.json()["error"]["code"], "invalid_video_id")
+
+    def test_post_endpoint_missing_body_returns_422(self):
+        r = self.client.post("/v1/videos/status", headers=_headers(), json={})
+        # pydantic missing field → 422
+        self.assertEqual(r.status_code, 422)
+
+
 if __name__ == "__main__":
     unittest.main()

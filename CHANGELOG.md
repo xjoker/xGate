@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-05-16
+
+### Added
+- **conversation_id sticky binding**：`/v1/chat/completions` 多轮对话自动锁定同账号，
+  避免 LRU 切号导致 Grok 上下文失忆。
+  - 来源优先级：`req.metadata.conversation_id` > `req.user`（OpenAI 标准字段，
+    `conversationId` camelCase 也接受）→ 256 字符截断
+  - 选号优先级：`X-Account-Label` header > sticky binding > LRU + soft_cooldown
+  - 绑定目标账号失效（disabled / deleted）→ 静默回退 LRU + warning log（不打断对话）
+  - SQLite 新表 `conversation_account_map(conversation_id PK, account_label, created_at, last_seen)`
+    + `idx_conv_acct_last_seen` 索引；幂等迁移由 `_ensure_table()` 处理
+  - TTL 7 天；后台 `_conversation_binding_cleanup_loop` 12h 一次清过期行
+  - 新方法：`AccountPool.get_conversation_binding / set_conversation_binding /
+    cleanup_old_conversation_bindings / list_conversation_bindings`
+  - `GET /admin/conversation-bindings?limit=N` 调试端点（默认 100，上限 1000）
+- **`/v1/images/generations` 接受 X-Account-Label header**：endpoint 提交 ws_gateway
+  job 前同步预校验 label（避免 worker raise 转 500），`_WsJob.force_label` 透传到
+  `account_pool.acquire(force_label=...)`。完成 Phase 3 #3 留的 TODO。
+  - image_stream_worker（连续生图）仍走 LRU，留后续 release
+
+### Changed
+- **`GET /v1/videos/{id}/status` 被 `POST /v1/videos/status` 取代**（CSRF 防护）。
+  - 旧 GET 端点已删除（**契约破坏性**：直接调 GET 的客户端会 404）
+  - 新 body `{video_id: <id>}`；空 video_id → 400 `invalid_video_id`
+  - 前端 polling 代码同步切换
+
+### Tests
+- 310 passing（+21）：sticky binding 单元 + extract / persist helper / admin endpoint
+  / images_generations strict label / video status POST schema。
+
 ## [0.3.1] - 2026-05-16
 
 ### Security

@@ -2027,7 +2027,7 @@ window.generateVideo = async function() {
       return;
     }
     try {
-      const s = await api('GET', '/v1/videos/' + videoId + '/status');
+      const s = await api('POST', '/v1/videos/status', { video_id: videoId });
       if (s.ready && s.download_url) {
         clearInterval(poll);
         chipEl.textContent = '✓ 已完成';
