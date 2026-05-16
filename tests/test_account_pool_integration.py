@@ -391,6 +391,25 @@ class AdminAccountsTests(unittest.TestCase):
         for f in expected_fields:
             self.assertIn(f, acc, f"字段 {f!r} 不存在于 AccountInfo")
 
+    def test_quota_cache_field_present_in_list(self) -> None:
+        """list_accounts 响应包含 quota_cache 字段（即使为空）— 用于 UI 渲染额度概览。"""
+        self.client.post("/admin/accounts", headers=_headers(), json={
+            "label": "qc-test", "cookie": "sso=quota_cache_test",
+        })
+        # 手动写一个缓存项进去（模拟后台 poll loop 已跑过）
+        account_pool.update_quota(
+            "qc-test", "grok-4.20-auto",
+            remaining=20, total=25, reset_at=0.0,
+        )
+        accts = self.client.get("/admin/accounts", headers=_headers()).json()["accounts"]
+        acc = next((a for a in accts if a["label"] == "qc-test"), None)
+        self.assertIsNotNone(acc)
+        assert acc is not None
+        self.assertIn("quota_cache", acc)
+        self.assertIn("grok-4.20-auto", acc["quota_cache"])
+        self.assertEqual(acc["quota_cache"]["grok-4.20-auto"]["remaining"], 20)
+        self.assertEqual(acc["quota_cache"]["grok-4.20-auto"]["total"], 25)
+
     def test_cookie_is_masked_in_list(self) -> None:
         """列表中 cookie 字段应该是掩码，不应暴露原始 cookie。"""
         raw_cookie = "sso=super_secret_token_abcdef1234567890; sso-rw=another_secret"

@@ -1129,10 +1129,14 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
   </div>
 
   <!-- Quota section -->
-  <div style="font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px">配额监控</div>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+    <div style="font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.06em">配额监控</div>
+    <button class="btn btn-outline btn-sm" id="h-quota-perAccount-toggle" onclick="togglePerAccountQuota()" style="font-size:11px;padding:3px 9px;display:none">按账号展开</button>
+  </div>
   <div id="h-quota-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:12px;margin-bottom:20px">
     <div class="settings-card" style="padding:14px 16px;color:var(--fg-muted);font-size:13px">加载中…</div>
   </div>
+  <div id="h-quota-per-account" style="display:none;margin-bottom:20px"></div>
 
   <!-- Task queue + service status row -->
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px">
@@ -3526,6 +3530,15 @@ function _setQuotaCard(prefix, color, q) {
   if (remEl) remEl.style.color = barColor;
 }
 
+window.togglePerAccountQuota = function() {
+  const wrap = document.getElementById('h-quota-per-account');
+  const btn  = document.getElementById('h-quota-perAccount-toggle');
+  if (!wrap || !btn) return;
+  const isHidden = wrap.style.display === 'none';
+  wrap.style.display = isHidden ? '' : 'none';
+  btn.textContent = isHidden ? '收起按账号视图' : `按账号展开 (${btn.dataset.count || '?'})`;
+};
+
 window.loadHome = async function() {
   try {
     const d = await api('POST', '/admin/dashboard');
@@ -3560,6 +3573,38 @@ window.loadHome = async function() {
       if (window._quotaSnapshot) window._quotaSnapshot.image_quota = iq || null;
       else window._quotaSnapshot = { quotas: {}, chat: [], image_quota: iq || null };
 
+      // per-account quotas（来自账号池缓存，可能比聚合视图新或旧）
+      const paq = d.per_account || {};
+      const accountLabels = Object.keys(paq);
+      const toggleBtn = document.getElementById('h-quota-perAccount-toggle');
+      const paqWrap   = document.getElementById('h-quota-per-account');
+      if (toggleBtn && paqWrap) {
+        if (accountLabels.length >= 2) {
+          toggleBtn.style.display = '';
+          toggleBtn.dataset.count = String(accountLabels.length);
+          // 渲染（先生成，按钮控制 visibility）
+          paqWrap.innerHTML = accountLabels.map(label => {
+            const items = paq[label] || [];
+            const chips = items.map(q => {
+              const pct = q.used_pct ?? 0;
+              const color = pct >= 90 ? '#dc2626' : pct >= 70 ? '#d97706' : '#059669';
+              return `<div style="display:flex;align-items:center;gap:6px;padding:4px 8px;border:1px solid var(--border-subtle);border-radius:6px;font-size:11px">
+                <span style="font-family:var(--font-mono);color:#6b7280">${esc(q.label || q.model_id)}</span>
+                <span style="font-weight:600;color:${color}">${q.remaining}/${q.total}</span>
+                <span style="color:#9ca3af">(${pct}%)</span>
+              </div>`;
+            }).join('');
+            return `<div class="settings-card" style="padding:12px 14px;margin-bottom:8px">
+              <div style="font-size:12px;font-weight:700;font-family:var(--font-mono);color:#374151;margin-bottom:6px">${esc(label)}</div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">${chips || '<span style="font-size:11px;color:var(--fg-muted)">无缓存数据，等待后台 poll</span>'}</div>
+            </div>`;
+          }).join('');
+        } else {
+          toggleBtn.style.display = 'none';
+          paqWrap.style.display = 'none';
+          paqWrap.innerHTML = '';
+        }
+      }
       if (!mqs.length && !iq) {
         qGrid.innerHTML = '<div class="settings-card" style="padding:14px 16px;color:var(--fg-muted);font-size:13px">暂无配额数据（Cookie 未配置？）</div>';
       } else {
