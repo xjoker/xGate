@@ -3339,12 +3339,15 @@ async def grok_assets_save_local(
 
 class _AccountUpsertRequest(BaseModel):
     label: str
-    cookie: str
+    # cookie 可空：仅编辑现有账号时允许（服务端保留旧值）；新建时仍校验非空
+    cookie: str = ""
     user_agent: str = ""
     browser: str = "chrome142"
     proxy: str = ""
     statsig_id: str = ""
-    enabled: bool = True
+    # enabled = None 表示"未指定"：新建默认启用，编辑保留现有 enabled 状态。
+    # 防止 edit modal 不传 enabled 时把禁用账号悄然启用。
+    enabled: bool | None = None
     priority: int = 1
     weight: int = 10
 
@@ -3379,24 +3382,36 @@ async def admin_list_accounts() -> JSONResponse:
           description="以 label 为主键，新增或更新账号配置。cookie 字段必填；其余留空则保持默认值。",
           dependencies=[Depends(_require_api_key)])
 async def admin_upsert_account(req: _AccountUpsertRequest) -> JSONResponse:
-    if not req.label.strip():
+    label = req.label.strip()
+    if not label:
         raise HTTPException(status_code=400, detail="label 不能为空")
-    if not req.cookie.strip():
-        raise HTTPException(status_code=400, detail="cookie 不能为空")
+    cookie = req.cookie.strip()
+    existing = account_pool.get_account(label)
+    if not cookie:
+        # 编辑现有账号且 cookie 留空 → 保留旧 cookie 与凭证字段（仅改 priority/weight/enabled）
+        if existing is None:
+            raise HTTPException(status_code=400, detail="cookie 不能为空（新建账号必须提供）")
+        cookie = existing.cookie
+    # enabled 字段三态：True/False 显式覆盖；None 时新建默认 True，编辑保留 existing.enabled
+    if req.enabled is None:
+        enabled = existing.enabled if existing else True
+    else:
+        enabled = req.enabled
     acc = Account(
-        label=req.label.strip(),
-        cookie=req.cookie.strip(),
-        user_agent=req.user_agent.strip(),
-        browser=req.browser.strip() or "chrome142",
-        proxy=req.proxy.strip(),
-        statsig_id=req.statsig_id.strip(),
-        enabled=req.enabled,
+        label=label,
+        cookie=cookie,
+        user_agent=req.user_agent.strip() or (existing.user_agent if existing else ""),
+        browser=req.browser.strip() or (existing.browser if existing else "chrome142"),
+        proxy=req.proxy.strip() or (existing.proxy if existing else ""),
+        statsig_id=req.statsig_id.strip() or (existing.statsig_id if existing else ""),
+        enabled=enabled,
         priority=req.priority,
         weight=req.weight,
     )
     account_pool.upsert_account(acc)
-    logger.info("admin: upsert account label=%r", acc.label)
-    return JSONResponse({"ok": True, "label": acc.label})
+    action = "updated" if existing else "created"
+    logger.info("admin: %s account label=%r", action, label)
+    return JSONResponse({"ok": True, "label": label, "action": action})
 
 
 @app.delete("/admin/accounts/{label}", tags=[_TAG_ADMIN], summary="删除 Grok 账号",
