@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-17
+
+### Added
+- **`examples/` 目录** — 6 个可直接运行的接入示例：
+  - `openai_basic.py` — OpenAI SDK 跑 chat/image/models
+  - `openai_streaming.py` — 流式 chat + `include_usage`
+  - `x_account_label.py` — 用 X-Account-Label 强制账号
+  - `sticky_binding.py` — `metadata.conversation_id` 多轮 sticky
+  - `multi_account_admin.py` — admin API 批量管理 + find idlest account
+  - `curl_quickstart.sh` — 纯 cURL 一键体验所有核心端点
+- README 加 examples 章节链接
+
+### Tests
+- 335 tests 全过（零回归）
+
 ## [0.3.9] - 2026-05-17
 
 ### Added
