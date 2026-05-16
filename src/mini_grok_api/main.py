@@ -259,7 +259,7 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
 
 app = FastAPI(
     title="xGate API",
-    version="0.3.5",
+    version="0.3.6",
     lifespan=_lifespan,
     description=(
         "**xAI Grok → OpenAI-compatible API 网关**\n\n"
@@ -2193,10 +2193,12 @@ async def images_generations(
     aspect_ratio = resolve_aspect_ratio(req.size)
     logger.info("image: model=%s prompt=%r aspect=%s n=%d label=%s",
                 model_id, prompt[:80], aspect_ratio, req.n, account_label or "(lru)")
-    session_id = str(__import__("uuid").uuid4())
+    session_id = str(uuid.uuid4())  # NITPICK 修复：模块顶部已 import uuid
     session_dir = _init_session(session_id, prompt=prompt, source="api", aspect_ratio=aspect_ratio)
     t0 = time.monotonic()
     monitor.record_start()
+    # BUG-F 修复：generate_images stats_sink 回传实际选中的 account_label，让 log_image 能记账
+    _stats: dict = {}
     try:
         batch = await ws_gateway.generate_images(
             prompt=prompt,
@@ -2204,6 +2206,7 @@ async def images_generations(
             enable_pro=spec.enable_pro,
             session_dir=session_dir,
             force_label=account_label,
+            stats_sink=_stats,
         )
         images = sorted(batch[: req.n], key=lambda r: r.order)
     except GrokClientError as exc:
@@ -2213,6 +2216,7 @@ async def images_generations(
             request_id=session_id, model=model_id, prompt=prompt,
             aspect_ratio=aspect_ratio, source="api",
             status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+            account_label=_stats.get("account_label", "") or "",
         )
         return _error_response(str(exc), exc.status_code, code=code)
     except Exception as exc:
@@ -2222,6 +2226,7 @@ async def images_generations(
             request_id=session_id, model=model_id, prompt=prompt,
             aspect_ratio=aspect_ratio, source="api",
             status="error", duration_ms=int((time.monotonic() - t0) * 1000), error=str(exc),
+            account_label=_stats.get("account_label", "") or "",
         )
         return _error_response("Internal server error", 500)
 
@@ -2232,6 +2237,7 @@ async def images_generations(
         image_count=len(images),
         aspect_ratio=aspect_ratio, source="api",
         status="success", duration_ms=int((time.monotonic() - t0) * 1000),
+        account_label=_stats.get("account_label", "") or "",
     )
     base = _base_url(settings)
 
@@ -2289,7 +2295,9 @@ async def chat_completions(
                 account_label = bound
                 logger.info("chat: sticky binding hit conv_id=%s → label=%s", conv_id[:32], bound)
             else:
-                logger.warning("chat: sticky binding stale (conv_id=%s, label=%s不可用)，回退 LRU",
+                # BUG-G (v0.3.6) 修复：主动删除失效 binding，避免每请求重复 warning + 重复查询
+                account_pool.delete_conversation_binding(conv_id)
+                logger.warning("chat: sticky binding stale (conv_id=%s, label=%s不可用)，已清理并回退 LRU",
                                conv_id[:32], bound)
 
     monitor.record_start()

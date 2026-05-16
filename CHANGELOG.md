@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-05-17
+
+### Fixed
+- **BUG-F** `POST /v1/images/generations` 路径 `log_image()` 缺 `account_label`
+  字段（和 BUG-E 同类问题在 v0.3.4 只修了 stream 路径，这次补齐 one-shot 路径）:
+  - `WsGateway.generate_images()` 加可选 `stats_sink` 参数
+  - 3 个 callback (on_batch/on_error/on_done) 在 fut.set_* 前把 `job.last_used_label`
+    写入 stats_sink["account_label"]
+  - `images_generations` endpoint 传入 `_stats` dict 并在 success/error 两条
+    log_image 路径都附 `account_label=_stats.get("account_label", "")`
+- **BUG-G** chat completions sticky binding 命中失效账号时只 log warning，不
+  清理 binding → 每请求重复触发 7 天，浪费日志和查询：
+  - 新方法 `AccountPool.delete_conversation_binding(conv_id) -> bool`
+  - chat_completions stale 分支 `account_pool.delete_conversation_binding(conv_id)` 主动清
+- **NITPICK** `images_generations` 内 `str(__import__("uuid").uuid4())` 笔误（模块
+  顶部已 `import uuid`）改为标准写法
+
+### Tests
+- 316 → 318 passing (+2)：`test_delete_conversation_binding_returns_true_when_present`
+  / `test_delete_conversation_binding_returns_false_when_missing`
+
 ## [0.3.5] - 2026-05-17
 
 ### Security

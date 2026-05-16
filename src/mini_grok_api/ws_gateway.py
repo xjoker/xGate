@@ -105,28 +105,41 @@ class WsGateway:
         session_dir: Path,
         image_data: str | None = None,
         force_label: str | None = None,
+        stats_sink: dict | None = None,
     ) -> list[ImageResult]:
         """一次性生图：提交 job，等待第一批完成后返回。
 
         force_label: X-Account-Label 透传；非 None 时强制走该账号（pool.acquire
         的 strict 模式：账号不存在/禁用 → raise UnknownAccountError /
         AccountDisabledError，上层应在调用前预校验避免 worker raise 500）。
+
+        stats_sink: 可选 dict — 成功返回前，worker 会把 `account_label`（实际选中
+        的 label）写入此 dict 供 caller log_image 使用。BUG-F (v0.3.6) 修复
+        images_generations 路径 log_image 缺 account_label 问题。
         """
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[list[ImageResult]] = loop.create_future()
         stop = asyncio.Event()
+        # 引用同一个 job 对象用于 callback 内读 last_used_label
+        job_holder: dict = {}
 
         def on_batch(batch: list[ImageResult]) -> None:
             if not fut.done():
+                if stats_sink is not None and "job" in job_holder:
+                    stats_sink["account_label"] = job_holder["job"].last_used_label
                 fut.set_result(batch)
             stop.set()  # 取到一批即停
 
         def on_error(exc: Exception) -> None:
             if not fut.done():
+                if stats_sink is not None and "job" in job_holder:
+                    stats_sink["account_label"] = job_holder["job"].last_used_label
                 fut.set_exception(exc)
 
         def on_done() -> None:
             if not fut.done():
+                if stats_sink is not None and "job" in job_holder:
+                    stats_sink["account_label"] = job_holder["job"].last_used_label
                 fut.set_exception(
                     GrokClientError("Imagine returned no images", status_code=502, code="no_images")
                 )
@@ -145,6 +158,7 @@ class WsGateway:
             image_data=image_data,
             force_label=force_label,
         )
+        job_holder["job"] = job
         await self._queue.put(job)
         return await fut
 
