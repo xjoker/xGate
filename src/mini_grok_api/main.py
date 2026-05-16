@@ -22,6 +22,9 @@ from fastapi import Cookie, Depends, FastAPI, Form, Header, HTTPException, Reque
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from .accounts import AccountPool, AccountAcquisition  # noqa: F401 (AccountAcquisition for type hints)
 from .auth_session import CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE, session_store
@@ -271,6 +274,32 @@ app = FastAPI(
 )
 _STATIC_DIR = Path(__file__).parent / "static"
 _STATIC_DIR.mkdir(exist_ok=True)
+
+
+# ── Rate limiter（slowapi）────────────────────────────────────────────────────
+# 单用户 self-host 场景：内存后端足够（无 Redis 依赖），仅装饰高敏感端点（/v1/auth/login）。
+# get_remote_address 默认从 request.client.host 取 IP；反向代理场景需额外读 X-Forwarded-For，
+# 留作 Phase 3 follow-up。headers_enabled 自动加 X-RateLimit-* + Retry-After。
+limiter = Limiter(key_func=get_remote_address, headers_enabled=True)
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded) -> JSONResponse:
+    """OpenAI 兼容的 429 响应：error.type=rate_limit_error，code 标识来源端点。"""
+    # exc.detail 形如 "10 per 1 minute"；从触发的端点路径推导 code
+    path = request.url.path
+    if path.endswith("/v1/auth/login"):
+        code = "login_rate_limited"
+        message = "登录请求过于频繁，请稍后再试"
+    else:
+        code = "rate_limited"
+        message = f"请求被限流：{exc.detail}"
+    payload = error_payload(message, error_type="rate_limit_error", code=code)
+    # slowapi 的 Retry-After header 由 headers_enabled 自动注入，但 JSON 响应里也带一份方便客户端读
+    retry_after = int(getattr(exc, "retry_after", 60) or 60)
+    payload["error"]["retry_after"] = retry_after
+    return JSONResponse(payload, status_code=429, headers={"Retry-After": str(retry_after)})
 
 
 @app.middleware("http")
@@ -1203,8 +1232,11 @@ def _clear_session_cookies(response: Response) -> None:
               "前端登录入口。请求体（form 或 JSON）携带 `api_key`，校验通过后下发：\n"
               "- `xgate_session`: HttpOnly + SameSite=Strict 的会话 cookie\n"
               "- `xgate_csrf`: 普通 cookie，前端需在状态修改请求里回填到 `X-CSRF-Token` header\n\n"
-              "默认 24h 过期。"
+              "默认 24h 过期。\n\n"
+              "**限流**：每 IP 10 次/分钟。超限返回 429 + `Retry-After` header + "
+              "`error.type=rate_limit_error, code=login_rate_limited`。"
           ))
+@limiter.limit("10/minute")
 async def auth_login(
     request: Request,
     settings: Annotated[Settings, Depends(_settings)],
