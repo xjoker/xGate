@@ -1715,7 +1715,16 @@ async function apiForm(method, path, formData) {
 async function apiFormJson(method, path, formData) {
   const r = await apiForm(method, path, formData);
   const d = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(d?.error?.message || d?.detail || d?.error || `HTTP ${r.status}`);
+  if (!r.ok) {
+    let msg = d?.error?.message || d?.detail;
+    if (!msg) {
+      const errAny = d?.error;
+      msg = (errAny && typeof errAny === 'object')
+        ? JSON.stringify(errAny)
+        : (errAny || `HTTP ${r.status}`);
+    }
+    throw new Error(msg);
+  }
   return d;
 }
 
