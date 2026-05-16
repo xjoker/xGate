@@ -166,6 +166,48 @@ class AdminAccountsTests(unittest.TestCase):
         self.assertEqual(acc.priority, 5)
         self.assertEqual(acc.weight, 20)
 
+    def test_edit_disabled_account_preserves_disabled_state(self) -> None:
+        """编辑禁用账号（不传 enabled 字段）→ 保持禁用，不会被悄然启用。
+
+        真实 UI 场景：edit modal 只发 {label, cookie, priority, weight}。
+        过去 _AccountUpsertRequest.enabled 默认 True 会把禁用账号悄悄启用。
+        """
+        self.client.post("/admin/accounts", headers=_headers(), json={
+            "label": "acc-disabled-edit", "cookie": "sso=x",
+        })
+        self.client.post(
+            "/admin/accounts/acc-disabled-edit/enabled",
+            headers=_headers(), json={"enabled": False},
+        )
+        r = self.client.post("/admin/accounts", headers=_headers(), json={
+            "label": "acc-disabled-edit", "cookie": "", "priority": 3, "weight": 30,
+        })
+        self.assertEqual(r.status_code, 200)
+        accts = self.client.get("/admin/accounts", headers=_headers()).json()["accounts"]
+        target = next((a for a in accts if a["label"] == "acc-disabled-edit"), None)
+        self.assertIsNotNone(target)
+        assert target is not None
+        self.assertFalse(target["enabled"], "edit should not flip disabled → enabled")
+        self.assertEqual(target["status"], "manually_disabled")
+
+    def test_upsert_explicit_enabled_true_re_enables(self) -> None:
+        """显式 enabled=True → 应当真的启用（区别于 enabled=None 未指定）。"""
+        self.client.post("/admin/accounts", headers=_headers(), json={
+            "label": "acc-explicit-enable", "cookie": "sso=y",
+        })
+        self.client.post(
+            "/admin/accounts/acc-explicit-enable/enabled",
+            headers=_headers(), json={"enabled": False},
+        )
+        r = self.client.post("/admin/accounts", headers=_headers(), json={
+            "label": "acc-explicit-enable", "cookie": "", "enabled": True,
+        })
+        self.assertEqual(r.status_code, 200)
+        accts = self.client.get("/admin/accounts", headers=_headers()).json()["accounts"]
+        target = next((a for a in accts if a["label"] == "acc-explicit-enable"), None)
+        assert target is not None
+        self.assertTrue(target["enabled"])
+
     def test_upsert_existing_with_new_cookie_replaces(self) -> None:
         """编辑现有账号时 cookie 非空 → 覆盖旧 cookie。"""
         self.client.post("/admin/accounts", headers=_headers(), json={

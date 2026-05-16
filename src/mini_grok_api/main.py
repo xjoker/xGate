@@ -3345,7 +3345,9 @@ class _AccountUpsertRequest(BaseModel):
     browser: str = "chrome142"
     proxy: str = ""
     statsig_id: str = ""
-    enabled: bool = True
+    # enabled = None 表示"未指定"：新建默认启用，编辑保留现有 enabled 状态。
+    # 防止 edit modal 不传 enabled 时把禁用账号悄然启用。
+    enabled: bool | None = None
     priority: int = 1
     weight: int = 10
 
@@ -3390,6 +3392,11 @@ async def admin_upsert_account(req: _AccountUpsertRequest) -> JSONResponse:
         if existing is None:
             raise HTTPException(status_code=400, detail="cookie 不能为空（新建账号必须提供）")
         cookie = existing.cookie
+    # enabled 字段三态：True/False 显式覆盖；None 时新建默认 True，编辑保留 existing.enabled
+    if req.enabled is None:
+        enabled = existing.enabled if existing else True
+    else:
+        enabled = req.enabled
     acc = Account(
         label=label,
         cookie=cookie,
@@ -3397,7 +3404,7 @@ async def admin_upsert_account(req: _AccountUpsertRequest) -> JSONResponse:
         browser=req.browser.strip() or (existing.browser if existing else "chrome142"),
         proxy=req.proxy.strip() or (existing.proxy if existing else ""),
         statsig_id=req.statsig_id.strip() or (existing.statsig_id if existing else ""),
-        enabled=req.enabled,
+        enabled=enabled,
         priority=req.priority,
         weight=req.weight,
     )
