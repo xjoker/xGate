@@ -47,3 +47,25 @@ def _reset_rate_limiter():
     from mini_grok_api import main as main_mod
     main_mod.limiter.reset()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_settings_disk_writes(monkeypatch):
+    """BUG-D 防护：阻止任何测试经由 /admin/config 等端点把开发者的 prod
+    `data/config/mini.toml` 改写。settings_store.update() 改为只更新内存
+    `_settings`，不调用 save_settings。
+
+    任何依赖「update 后下次 get() 能读到新值」的测试仍然 work（内存更新到位）；
+    只是磁盘上的 mini.toml 不会被污染。
+    """
+    from dataclasses import replace as _dc_replace
+    from mini_grok_api import main as main_mod
+    _ss = main_mod.settings_store  # singleton 在 main.py 创建
+
+    def _in_memory_update(**kwargs):
+        new = _dc_replace(_ss.get(), **kwargs)
+        _ss._settings = new  # type: ignore[attr-defined]
+        return new
+
+    monkeypatch.setattr(_ss, "update", _in_memory_update)
+    yield
