@@ -3500,7 +3500,7 @@ window.loadHome = async function() {
       else window._quotaSnapshot = { quotas: {}, chat: [], image_quota: iq || null };
 
       // per-account quotas（来自账号池缓存，可能比聚合视图新或旧）
-      const paq = d.per_account_quotas || {};
+      const paq = d.per_account || {};
       const accountLabels = Object.keys(paq);
       const toggleBtn = document.getElementById('h-quota-perAccount-toggle');
       const paqWrap   = document.getElementById('h-quota-per-account');

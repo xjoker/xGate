@@ -2771,8 +2771,11 @@ def _per_account_chat_quotas_snapshot(specs: list[ModelSpec]) -> dict[str, list[
                 continue
             remaining = int(q.get("remaining") or 0)
             total = int(q.get("total") or remaining or 0)
+            # total <= 0 时数据无意义（避免 "5/0 (0%)" 这种渲染）
+            if total <= 0:
+                continue
             used = max(total - remaining, 0)
-            pct = round(used / total * 100, 1) if total > 0 else 0.0
+            pct = round(used / total * 100, 1)
             items.append({
                 "model_id": model_id,
                 "mode_id": spec.mode_id,
@@ -2970,8 +2973,10 @@ def _per_account_modes_snapshot() -> dict[str, dict]:
                 continue
             remaining = int(q.get("remaining") or 0)
             total = int(q.get("total") or remaining or 0)
+            if total <= 0:
+                continue
             used = max(total - remaining, 0)
-            pct = round(used / total * 100, 1) if total > 0 else 0.0
+            pct = round(used / total * 100, 1)
             modes[mode_id] = {
                 "remaining": remaining, "total": total,
                 "used": used, "used_pct": pct,
@@ -3255,12 +3260,12 @@ async def admin_dashboard(settings: Annotated[Settings, Depends(_settings)]) -> 
     img_quota_valid = [c for c in img_quota_result["candidates"] if "remaining" in c]
     image_quota = img_quota_valid[0] if img_quota_valid else None
     # 按账号 × 模型的 chat 配额快照（复用后台 poll loop 已缓存值，零额外上游请求）
-    per_account_quotas = _per_account_chat_quotas_snapshot(chat_specs)
+    # 字段命名统一为 per_account（与 /v1/quota、/v1/quota/chat 对齐）
     return JSONResponse({
         "version": app.version,
         "model_quotas": model_quotas,
         "image_quota": image_quota,
-        "per_account_quotas": per_account_quotas,
+        "per_account": _per_account_chat_quotas_snapshot(chat_specs),
         "tasks": {**task_stats, "total_moderated": total_moderated},
         "recent_tasks": recent_tasks,
         "logs": log_stats,
