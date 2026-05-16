@@ -259,7 +259,7 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
 
 app = FastAPI(
     title="xGate API",
-    version="0.3.2",
+    version="0.3.3",
     lifespan=_lifespan,
     description=(
         "**xAI Grok → OpenAI-compatible API 网关**\n\n"
@@ -2566,6 +2566,7 @@ def _not_implemented(endpoint: str) -> JSONResponse:
 async def stream_start(
     req: ImageStreamStartRequest,
     settings: Annotated[Settings, Depends(_settings)],
+    account_label: Annotated[str | None, Depends(_account_label_header)] = None,
 ) -> JSONResponse:
     model_id = req.model or settings.default_image_model
     spec = get_model(model_id)
@@ -2575,6 +2576,13 @@ async def stream_start(
         return _error_response("prompt cannot be empty", 400, code="invalid_prompt")
     if image_stream_worker.is_running():
         return JSONResponse({"ok": False, "message": "worker already running"}, status_code=409)
+    # 0.3.3: X-Account-Label 预校验 — 整个 stream session 都走该账号；不合法直接 400
+    if account_label:
+        _existing = account_pool.get_account(account_label)
+        if _existing is None:
+            raise UnknownAccountError(account_label)
+        if not _existing.enabled:
+            raise AccountDisabledError(account_label, status="manually_disabled")
     cfg = StreamConfig(
         prompt=req.prompt.strip(),
         model=model_id,
@@ -2586,7 +2594,10 @@ async def stream_start(
         enable_pro=spec.enable_pro,
         image_data=req.image_data or None,
     )
-    session_id = image_stream_worker.start(ws_gateway, cfg, log_db=log_db, task_queue=task_queue)
+    session_id = image_stream_worker.start(
+        ws_gateway, cfg, log_db=log_db, task_queue=task_queue,
+        force_label=account_label,
+    )
     return JSONResponse({
         "ok": True,
         "message": "stream started",
