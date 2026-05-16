@@ -65,6 +65,12 @@ class Settings:
     default_image_model: str
     public_base_url: str
     cookie_secure: str  # "auto" | "always" | "never"
+    # v0.3.9 P2-2: 反向代理部署时设 True，让 slowapi 从 X-Forwarded-For 取真实客户端 IP
+    # （否则所有客户端被算作同一代理 IP，登录限流误伤）。仅在你信任前置代理时开启。
+    trust_x_forwarded_for: bool
+    # v0.3.9 P2-3: image quota probe 探测出的有效 model_name 缓存到 toml，
+    # 重启后跳过 4-candidate 探测，直接复用。空字符串 = 未探测/未持久化。
+    grok_image_quota_model_name: str
     chat_models: tuple  # list of dicts: {id, mode_id, name, image_model, enable_pro}
 
 
@@ -147,6 +153,8 @@ def load_settings() -> Settings:
         default_image_model=_str(data, "models.default_image_model", "grok-imagine-image-lite"),
         public_base_url=_str(data, "server.public_base_url", ""),
         cookie_secure=_str(data, "server.cookie_secure", "auto"),
+        trust_x_forwarded_for=bool(_get_nested(data, "server.trust_x_forwarded_for", False)),
+        grok_image_quota_model_name=_str(data, "grok.image_quota_model_name", ""),
         chat_models=tuple(_get_nested(data, "models.chat", None) or DEFAULT_CHAT_MODELS),
     )
 
@@ -161,6 +169,8 @@ def save_settings(settings: Settings, path: Path = CONFIG_PATH) -> None:
             f"public_base_url = {json.dumps(settings.public_base_url, ensure_ascii=False)}",
             f"# cookie_secure: auto=跟随 public_base_url 协议, always=强制 Secure, never=不设 Secure（仅限本地开发）",
             f"cookie_secure = {json.dumps(settings.cookie_secure, ensure_ascii=False)}",
+            f"# trust_x_forwarded_for: 反向代理部署时设 true 让限流器从 X-Forwarded-For 取真实 IP",
+            f"trust_x_forwarded_for = {str(settings.trust_x_forwarded_for).lower()}",
             "",
             "[auth]",
             f"api_key = {json.dumps(settings.api_key, ensure_ascii=False)}",
@@ -173,6 +183,8 @@ def save_settings(settings: Settings, path: Path = CONFIG_PATH) -> None:
             f"proxy = {json.dumps(settings.grok_proxy, ensure_ascii=False)}",
             f"timeout_seconds = {settings.grok_timeout_seconds}",
             f"disable_ssl_verify = {str(settings.grok_disable_ssl_verify).lower()}",
+            f"# image_quota_model_name: image quota probe 持久化 hint，重启复用避免 4-candidate 探测",
+            f"image_quota_model_name = {json.dumps(settings.grok_image_quota_model_name, ensure_ascii=False)}",
             f"flaresolverr_url = {json.dumps(settings.flaresolverr_url, ensure_ascii=False)}",
             f"flaresolverr_proxy_url = {json.dumps(settings.flaresolverr_proxy_url, ensure_ascii=False)}",
             "",

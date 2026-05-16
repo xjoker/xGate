@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.9] - 2026-05-17
+
+### Added
+- **P2-2 `server.trust_x_forwarded_for` 配置 + 反向代理感知限流**：
+  - 默认 `false` 维持现有行为（slowapi 用 `request.client.host`）
+  - 设为 `true` 时自定义 key_func 从 `X-Forwarded-For` 头取第一个 IP，
+    避免 nginx/Caddy/Cloudflare 后端把所有真实客户端归为同一代理 IP
+    触发登录限流误伤
+  - 仅在信任前置代理时开启（前置代理必须 sanitize 用户传入的 XFF 头）
+- **P2-3 image quota probe 持久化**：
+  - 新 `grok.image_quota_model_name` 配置字段（默认 `""`）
+  - 探测成功后 `_persist_image_quota_hint()` 写回 mini.toml
+  - lifespan 启动时从 settings 预填 `_IMAGE_QUOTA_MODEL_HINT`
+  - 重启后跳过 4-candidate 探测，直接复用上次结果（每账号节省 3 次上游请求）
+  - 同值不重写避免每次 poll 都打盘
+
+### Skipped (designed-around)
+- **P2-1 service_tier / store 字段持久化** — Yuki memory `1e8906b4` 评估：
+  实现需 ALTER 日志表 + 调用方多处改 + UI 展示 ~150 行，OpenAI 客户端实际
+  几乎不传 → 收益接近零，跳过。pydantic schema 仍接受这两个字段（不会 422），
+  只是不存盘
+
+### Tests
+- 328 → 335 passing (+7)：tests/test_p2_techdebt.py 覆盖两项 P2
+
 ## [0.3.8] - 2026-05-17
 
 ### Refactored

@@ -231,6 +231,11 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
             "Cookie 在 MitM 场景下可能泄露。仅限本地排错，生产请改回 False。"
         )
     account_pool.import_from_settings(_s)
+    # P2-3: 从 mini.toml 预填 image quota hint，避免每次重启都跑 4-candidate 探测
+    global _IMAGE_QUOTA_MODEL_HINT
+    if _s.grok_image_quota_model_name:
+        _IMAGE_QUOTA_MODEL_HINT = _s.grok_image_quota_model_name
+        logger.info("image quota hint restored from settings: %s", _IMAGE_QUOTA_MODEL_HINT)
     logger.info("account pool initialized: %d accounts", len(account_pool.list_accounts()))
     ws_gateway.start(settings_store.get, account_pool=account_pool)
     task_queue.start_worker(ws_gateway, log_db=log_db)
@@ -259,7 +264,7 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
 
 app = FastAPI(
     title="xGate API",
-    version="0.3.8",
+    version="0.3.9",
     lifespan=_lifespan,
     description=(
         "**xAI Grok → OpenAI-compatible API 网关**\n\n"
@@ -285,9 +290,21 @@ _STATIC_DIR.mkdir(exist_ok=True)
 
 # ── Rate limiter（slowapi）────────────────────────────────────────────────────
 # 单用户 self-host 场景：内存后端足够（无 Redis 依赖），仅装饰高敏感端点（/v1/auth/login）。
-# get_remote_address 默认从 request.client.host 取 IP；反向代理场景需额外读 X-Forwarded-For，
-# 留作 Phase 3 follow-up。headers_enabled 自动加 X-RateLimit-* + Retry-After。
-limiter = Limiter(key_func=get_remote_address, headers_enabled=True)
+# v0.3.9 P2-2: 支持反向代理 — 用户在 mini.toml 设 `server.trust_x_forwarded_for = true` 时，
+# key_func 从 X-Forwarded-For header 第一个 IP 取真实客户端；否则用 request.client.host。
+# headers_enabled 自动加 X-RateLimit-* + Retry-After。
+def _client_ip_for_rate_limit(request: Request) -> str:
+    if settings_store.get().trust_x_forwarded_for:
+        xff = request.headers.get("x-forwarded-for", "").strip()
+        if xff:
+            # 标准格式：client, proxy1, proxy2  → 取最左 client
+            first = xff.split(",", 1)[0].strip()
+            if first:
+                return first
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=_client_ip_for_rate_limit, headers_enabled=True)
 app.state.limiter = limiter
 
 
@@ -737,8 +754,22 @@ _REVALIDATE_INTERVAL = 1800     # auto_disabled 重验证间隔（30 分钟）
 
 # 全局 image quota model_name hint：首次跑 4-candidate probe 成功后写入，
 # 之后所有账号每轮只查这一个 model_name（4×N → 1×N，节省上游成本）。
-# 进程重启后从 0 重建，无需持久化（探测开销低）。
+# v0.3.9 P2-3: 探测成功后持久化到 settings.grok_image_quota_model_name，
+# 重启不丢；启动时从 settings 预填。
 _IMAGE_QUOTA_MODEL_HINT: str | None = None
+
+
+def _persist_image_quota_hint(model_name: str) -> None:
+    """探测成功后持久化 hint 到 mini.toml；落盘失败仅记 warning 不影响主流程。"""
+    if not model_name:
+        return
+    try:
+        if settings_store.get().grok_image_quota_model_name == model_name:
+            return  # 已是同一值，无需重写
+        settings_store.update(grok_image_quota_model_name=model_name)
+        logger.info("image quota hint persisted: %s", model_name)
+    except Exception:
+        logger.warning("failed to persist image quota hint=%s", model_name, exc_info=True)
 
 
 async def _account_quota_poll_loop() -> None:
@@ -800,6 +831,7 @@ async def _account_quota_poll_loop() -> None:
                         if img_valid:
                             _IMAGE_QUOTA_MODEL_HINT = img_valid["model_name"]
                             logger.info("image quota model hint cached: %s", _IMAGE_QUOTA_MODEL_HINT)
+                            _persist_image_quota_hint(_IMAGE_QUOTA_MODEL_HINT)
                     if img_valid:
                         remaining = int(img_valid.get("remaining") or img_valid.get("remainingQueries") or 0)
                         total = int(img_valid.get("total") or img_valid.get("totalQueries") or remaining or 0)
@@ -927,6 +959,7 @@ async def _poll_one_account_quota(label: str) -> None:
                 )
                 if img_valid:
                     _IMAGE_QUOTA_MODEL_HINT = img_valid["model_name"]
+                    _persist_image_quota_hint(_IMAGE_QUOTA_MODEL_HINT)
             if img_valid:
                 remaining = int(img_valid.get("remaining") or img_valid.get("remainingQueries") or 0)
                 total = int(img_valid.get("total") or img_valid.get("totalQueries") or remaining or 0)
