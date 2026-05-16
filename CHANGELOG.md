@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-17
+
+### Polish (code-review on v0.4.0)
+- `grok_files_client.save_grok_asset_local` 文件名净化加 `.lstrip(".")`，
+  防 dotfile 风格名字（路径穿越已早就阻断，这条是防御性）
+- `examples/multi_account_admin.py.edit()` docstring 明确警告 `cookie=""` 不会
+  清空 cookie；想清空账号请用 `toggle_enabled(label, False)`
+- `tests/test_p2_techdebt.py` `import unittest.mock` 移到文件顶部（去掉
+  反模式的末尾 import + noqa）
+
+### Tests
+- 335 tests 全过（零回归）
+
 ## [0.4.0] - 2026-05-17
 
 ### Added

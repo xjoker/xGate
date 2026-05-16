@@ -190,7 +190,8 @@ async def save_grok_asset_local(
     if not key:
         raise GrokClientError("Asset key is empty", status_code=400, code="missing_key")
     GROK_FILES_DIR.mkdir(parents=True, exist_ok=True)
-    safe_name = re.sub(r'[^\w.\-]', '_', filename)[:200] or "file"
+    # 字符白名单 + 截前导 "." 防 dotfile / 隐藏文件名 (review v0.4.1)
+    safe_name = re.sub(r'[^\w.\-]', '_', filename)[:200].lstrip(".") or "file"
     dest = GROK_FILES_DIR / safe_name
 
     # 文件存在且大小一致 → 跳过；大小不一致 → 重新下载（上次下载不完整）

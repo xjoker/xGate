@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import pathlib
 import unittest
+import unittest.mock
 from dataclasses import replace
 from unittest.mock import MagicMock
 
@@ -77,8 +78,6 @@ class ImageQuotaHintPersistenceTests(unittest.TestCase):
             main_mod._persist_image_quota_hint("")
             mock_update.assert_not_called()
 
-
-import unittest.mock  # noqa: E402
 
 if __name__ == "__main__":
     unittest.main()
