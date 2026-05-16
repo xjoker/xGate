@@ -525,6 +525,20 @@ class AccountPool:
                 (conversation_id, account_label, now, now),
             )
 
+    def delete_conversation_binding(self, conversation_id: str) -> bool:
+        """主动删除指定 binding（BUG-G v0.3.6）— sticky 命中失效账号时调用。
+
+        返回 True 表示实际删除了一行；不存在返回 False。
+        """
+        if not conversation_id:
+            return False
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM conversation_account_map WHERE conversation_id=?",
+                (conversation_id,),
+            )
+            return cur.rowcount > 0
+
     def cleanup_old_conversation_bindings(self) -> int:
         """删除超过 TTL 的 binding；返回删除行数。"""
         cutoff = time.time() - self.CONVERSATION_TTL_SECONDS

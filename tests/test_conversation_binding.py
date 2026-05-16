@@ -95,6 +95,16 @@ class AccountPoolConversationBindingTests(unittest.TestCase):
         labels_in_order = [b["conversation_id"] for b in bindings]
         self.assertEqual(labels_in_order[0], "conv-new")
 
+    def test_delete_conversation_binding_returns_true_when_present(self):
+        """v0.3.6 BUG-G: delete_conversation_binding API"""
+        account_pool.set_conversation_binding("conv-del", "acc-x")
+        self.assertTrue(account_pool.delete_conversation_binding("conv-del"))
+        self.assertIsNone(account_pool.get_conversation_binding("conv-del"))
+
+    def test_delete_conversation_binding_returns_false_when_missing(self):
+        self.assertFalse(account_pool.delete_conversation_binding("never-existed"))
+        self.assertFalse(account_pool.delete_conversation_binding(""))
+
     def test_delete_account_cascades_to_binding(self):
         """SAST round 4 P3: delete_account 同事务清理 conversation_account_map。"""
         from mini_grok_api.accounts import Account
