@@ -116,6 +116,26 @@ POST /v1/images/stream/start
 
 完整 OpenAPI 文档见 `/docs`。
 
+#### 可运行的代码示例
+
+`examples/` 目录提供 6 个开箱即用片段（Python + 纯 cURL）：
+
+| 文件 | 演示 |
+|---|---|
+| `openai_basic.py` | OpenAI Python SDK 直接接入跑 chat / image / 模型列表 |
+| `openai_streaming.py` | 流式 chat completion + `include_usage` 末尾 token 统计 |
+| `x_account_label.py` | `X-Account-Label` 强制指定账号 |
+| `sticky_binding.py` | `metadata.conversation_id` 多轮对话固定账号 |
+| `multi_account_admin.py` | 用 admin API 批量管理账号（导入 / 启停 / 删除 / 找最闲账号）|
+| `curl_quickstart.sh` | 纯 cURL 一键体验所有核心端点（适合无 Python 环境）|
+
+```bash
+export XGATE_API_KEY="你的-api-key"
+python examples/openai_basic.py
+# 或
+./examples/curl_quickstart.sh
+```
+
 ## 工作原理
 
 后端基于 FastAPI，前端为 Vanilla JS 单页，无构建步骤。配置仅从 `data/config/mini.toml` 读取，Web UI 中的修改也会写回同一文件。
