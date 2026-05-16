@@ -32,3 +32,18 @@ def pytest_configure(config) -> None:  # noqa: ANN001
     # 在任何测试 import main 之前替换 lifespan
     from mini_grok_api import main as main_mod
     main_mod.app.router.lifespan_context = _noop_lifespan
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """每个测试前清空 slowapi limiter 状态。
+
+    /v1/auth/login 限流策略 10/分钟/IP，pytest 跑很多 login 会瞬间超限。
+    TestClient 默认所有请求来自同一 IP（testclient），不清的话第 11 次开始 429。
+    """
+    from mini_grok_api import main as main_mod
+    main_mod.limiter.reset()
+    yield
