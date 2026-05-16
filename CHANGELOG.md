@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-05-17
+
+### Fixed
+- **BUG-E** `image_stream` 路径生图日志 `account_label` 字段为空：worker 内
+  `account_pool.acquire()` 选号成功后 label 没透回 caller，`log_db.log_image()`
+  调用时 `account_label` 参数缺失。修复链路：
+  - `_WsJob` 加 `last_used_label` 字段
+  - `WsGateway._run_job` acquire 后立刻写 `job.last_used_label = _acq.label`
+  - `stream_batches` 每次 yield 前把 label 写入 `stats_sink["account_label"]`
+  - `ImageStreamWorker._run` 传入 stats_sink + 用读到的 label 调 log_image
+    （3 处：success / GrokClientError / generic Exception 都覆盖）
+- 单元测试 `tests/test_image_stream_account_label.py` 覆盖 yield 多轮换账号 +
+  无 stats_sink 兜底两个场景。
+- **测试隔离强化（BUG-D 补强）**：autouse fixture `_isolate_settings_disk_writes`
+  在 conftest 拦截 `settings_store.update()` 防止集成测试落盘污染 prod mini.toml。
+
+### Tests
+- 312 → 314 passing。
+
 ## [0.3.3] - 2026-05-16
 
 ### Added

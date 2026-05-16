@@ -57,6 +57,8 @@ class _WsJob:
     total_attempted: int = 0      # 累计 slot 总数
     # X-Account-Label 透传：worker 内 acquire() 时强制走该账号；None=默认 LRU
     force_label: str | None = None
+    # worker 实际 acquire 到的 label（包含 LRU 选号结果）；caller 通过 stats_sink 读
+    last_used_label: str = ""
 
 
 class WsGateway:
@@ -195,6 +197,7 @@ class WsGateway:
             if stats_sink is not None:
                 stats_sink["moderated"] = job.moderated_count
                 stats_sink["attempted"] = job.total_attempted
+                stats_sink["account_label"] = job.last_used_label
             if item is _SENTINEL:
                 return
             if isinstance(item, BaseException):
@@ -238,6 +241,8 @@ class WsGateway:
             )
             _acq = _acq_ctx.__enter__()
             settings: Settings = _acq.settings
+            # 透出 worker 实际选中的账号（caller 通过 stats_sink["account_label"] 读）
+            job.last_used_label = _acq.label
         else:
             _acq_ctx = None
             _acq = None
