@@ -473,29 +473,43 @@ class ImportCurlSyncsDefaultAccountTests(unittest.TestCase):
         过去行为（BUG-A）：仅写 settings.grok_cookie，未调
         account_pool.import_from_settings(force_refresh_default=True) →
         UI 看似导入成功，但请求仍走旧 cookie。
+
+        **测试隔离（BUG-D 修复）**：mock 掉 `settings_store.update`，避免
+        真实写盘覆盖开发者的 prod mini.toml。原本测试在跑过后会把 prod
+        cookie 改成 _GROK_CURL 里的 mock 值 (`sso=abc123`)，无声破坏数据。
         """
         from mini_grok_api.accounts import Account
+        from dataclasses import replace as _replace
         # 先植入一个 cookie 为 "stale" 的 default 账号
         account_pool.upsert_account(Account(
             label="default", cookie="sso=stale_cookie",
             user_agent="", browser="chrome142", proxy="", statsig_id="",
             enabled=True, priority=1, weight=10,
         ))
-        # 用 unittest.mock 把 smoke_skills 短路（避免真访问 grok.com）
-        with patch("mini_grok_api.main.smoke_skills", new=AsyncMock(return_value={"status_code": 200})):
+        # mock settings_store.update：只更新内存 _settings，不落盘
+        original_settings = main_mod.settings_store.get()
+        def _no_disk_update(**kwargs):
+            new = _replace(main_mod.settings_store.get(), **kwargs)
+            main_mod.settings_store._settings = new  # type: ignore[attr-defined]
+        with patch("mini_grok_api.main.smoke_skills", new=AsyncMock(return_value={"status_code": 200})), \
+             patch.object(main_mod.settings_store, "update", side_effect=_no_disk_update):
             r = self.client.post(
                 "/admin/import-curl",
                 headers=_headers(),
                 data={"curl_text": _GROK_CURL},
             )
-        self.assertEqual(r.status_code, 200)
-        self.assertTrue(r.json()["ok"])
-        # 关键断言：default 账号 cookie 现在应来自新 cURL（含 abc123）
-        acc = account_pool.get_account("default")
-        self.assertIsNotNone(acc)
-        assert acc is not None
-        self.assertIn("abc123", acc.cookie, "default account cookie must be refreshed from imported cURL")
-        self.assertNotIn("stale_cookie", acc.cookie)
+        try:
+            self.assertEqual(r.status_code, 200)
+            self.assertTrue(r.json()["ok"])
+            # 关键断言：default 账号 cookie 现在应来自新 cURL（含 abc123）
+            acc = account_pool.get_account("default")
+            self.assertIsNotNone(acc)
+            assert acc is not None
+            self.assertIn("abc123", acc.cookie, "default account cookie must be refreshed from imported cURL")
+            self.assertNotIn("stale_cookie", acc.cookie)
+        finally:
+            # 还原 settings_store._settings — 防止后续测试看到 mock cookie
+            main_mod.settings_store._settings = original_settings  # type: ignore[attr-defined]
 
 
 class AccountUpsertWarmupTests(unittest.TestCase):
