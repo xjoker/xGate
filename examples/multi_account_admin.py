@@ -46,8 +46,14 @@ def delete(label: str) -> dict:
 
 def edit(label: str, *, priority: int | None = None, weight: int | None = None,
          cookie: str | None = None) -> dict:
-    """部分编辑（cookie 留空保留旧值；priority/weight 必传 None 时仍可传 0=禁用？看后端约束）。"""
-    payload = {"label": label, "cookie": cookie or ""}
+    """部分编辑。
+
+    cookie=None → 留空字符串发请求，xGate 后端 (v0.3.x+) 会**保留旧值**。
+    cookie="新的 cookie 字符串" → 覆盖旧值。
+    注意：千万别传 `cookie=""` 期望清空，后端不会清；如果你真的想"清空 cookie"
+    （让账号不可用），请用 `toggle_enabled(label, False)` 替代。
+    """
+    payload: dict = {"label": label, "cookie": cookie or ""}
     if priority is not None:
         payload["priority"] = priority
     if weight is not None:
