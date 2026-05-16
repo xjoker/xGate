@@ -4011,7 +4011,9 @@ async function _renderGrokImages(bubble) {
       });
       const url = d.data?.[0]?.url;
       if (url) {
-        el.innerHTML = `<img src="${url}" style="max-width:100%;border-radius:8px;display:block;cursor:zoom-in" alt="${esc(prompt)}" onclick="window.open('${url}','_blank')">`;
+        // 注意：url 同时进入 src 属性和 onclick JS 上下文 — 不能简单 esc()，
+        // src 用 esc() 防属性注入，onclick 用 JSON.stringify 防 JS 字符串注入。
+        el.innerHTML = `<img src="${esc(url)}" style="max-width:100%;border-radius:8px;display:block;cursor:zoom-in" alt="${esc(prompt)}" onclick="window.open(${JSON.stringify(url)},'_blank')">`;
         el.style.border = 'none'; el.style.padding = '0';
       } else {
         el.innerHTML = `<div style="color:#dc2626;font-weight:500">⚠️ 图片生成失败</div><div style="color:#dc2626;font-size:12px;margin-top:4px">未返回 URL</div>`;

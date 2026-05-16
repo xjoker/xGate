@@ -141,8 +141,8 @@ settings_store = SettingsStore(load_settings())
 # ---------------------------------------------------------------------------
 # 签名 URL 控制
 # ---------------------------------------------------------------------------
-# 过渡期：False = 旧 URL（无签名）仍放行（warning），True = 严格要求签名（将来切换）
-_SIGNED_URL_ENFORCED = False
+# 历史 _SIGNED_URL_ENFORCED 开关已弃用：现在改为「签名 URL 优先 + 标准鉴权 fallback」
+# 模式，由 _require_signed_or_auth 实现。两通道都失败才 403/401。
 
 
 def _sign_file_url(path: str) -> str:
@@ -214,6 +214,12 @@ async def _lifespan(app: FastAPI):  # noqa: ARG001
     elif _key == "change-me":
         logger.warning(
             "⚠️  api_key 仍为默认值 'change-me'，请在 data/config/mini.toml 的 [auth] 节下修改 api_key 后重启。"
+        )
+    # 启动时显式提示已禁用的安全开关（仅在用户主动开启时输出，避免噪音）
+    if getattr(_s, "grok_disable_ssl_verify", False):
+        logger.warning(
+            "⚠️  grok_disable_ssl_verify=True：上游 Grok HTTPS 证书校验已关闭，"
+            "Cookie 在 MitM 场景下可能泄露。仅限本地排错，生产请改回 False。"
         )
     account_pool.import_from_settings(_s)
     logger.info("account pool initialized: %d accounts", len(account_pool.list_accounts()))
@@ -860,6 +866,91 @@ def _require_api_key(
     )
 
 
+def _require_signed_or_auth(
+    request: Request,
+    settings: Annotated[Settings, Depends(_settings)],
+    authorization: Annotated[str | None, Header()] = None,
+    x_api_key: Annotated[str | None, Header(alias="x-api-key")] = None,
+    xgate_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE)] = None,
+    xgate_csrf_cookie: Annotated[str | None, Cookie(alias=CSRF_COOKIE)] = None,
+    csrf_header: Annotated[str | None, Header(alias=CSRF_HEADER)] = None,
+) -> None:
+    """文件端点专用鉴权：HMAC 签名 URL 优先，否则 fallback 到标准 _require_api_key。
+
+    - 浏览器 <img src=…>：自动带 HttpOnly cookie → 走 _require_api_key cookie 通道
+    - MCP 客户端走签名 URL（已由 _sign_file_url 签发）
+    - Bearer / X-Api-Key Header 客户端 → 同样放行
+    - 无任何凭证 → 401/403
+
+    取代了过去的 `_SIGNED_URL_ENFORCED=False` 旁路（无签名时只 warning 后放行）。
+    """
+    sig = request.query_params.get("sig", "")
+    if sig:
+        exp_raw = request.query_params.get("exp", "0")
+        try:
+            exp = int(exp_raw)
+        except ValueError:
+            exp = 0
+        if verify_signed_path(request.url.path, sig, exp, settings.api_key):
+            return
+        # 签名存在但无效 → 直接 403，不再 fallback（避免 token guessing）
+        raise HTTPException(status_code=403, detail="Invalid or expired signature")
+    # 无签名：走标准鉴权
+    _require_api_key(
+        request, settings, authorization, x_api_key,
+        xgate_session, xgate_csrf_cookie, csrf_header,
+    )
+
+
+def _validate_flaresolverr_url(url: str) -> None:
+    """SSRF guard for /admin/config flaresolverr_url field.
+
+    Only allow http:// and https:// schemes. Cloud metadata IPs and
+    other well-known internal endpoints are rejected outright; other
+    private IPs trigger a warning log only (legitimate self-hosted
+    FlareSolverr typically runs on the same LAN).
+
+    Raises HTTPException(400) on hard rejection.
+    """
+    from urllib.parse import urlparse
+    import ipaddress
+
+    try:
+        parsed = urlparse(url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"flaresolverr_url 解析失败: {exc}")
+    if parsed.scheme not in {"http", "https"}:
+        raise HTTPException(
+            status_code=400,
+            detail=f"flaresolverr_url scheme 必须为 http/https，当前为 {parsed.scheme!r}",
+        )
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise HTTPException(status_code=400, detail="flaresolverr_url 缺少 host")
+    # 硬拒绝：AWS / GCP / Azure 元数据服务
+    _METADATA_BLOCKLIST = {
+        "169.254.169.254",        # AWS / GCP / Azure IMDS
+        "metadata.google.internal",
+        "metadata.aws.internal",
+    }
+    if host in _METADATA_BLOCKLIST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"flaresolverr_url host {host!r} 是云元数据服务，已拒绝（SSRF 防护）",
+        )
+    # 私网 IP / loopback / link-local 仅记 warning（自托管常见场景）
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_link_local:
+            logger.warning(
+                "flaresolverr_url points at private/loopback IP %s — "
+                "ensure this is intentional (self-hosted FlareSolverr OK)", host,
+            )
+    except ValueError:
+        # hostname 不是 IP literal，跳过（DNS 解析时再判断成本高且易绕过，留作未来加固）
+        pass
+
+
 def _build_tools_system_block(req: ChatCompletionRequest) -> str | None:
     """根据 req.tools / req.tool_choice 构建注入系统块文本。
 
@@ -1228,22 +1319,10 @@ async def model_get(model_id: str) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 @app.get("/v1/files/image/{session_id}/{filename}", tags=[_TAG_GALLERY],
-         summary="获取图片文件", description="直接返回图片文件内容。URL 须携带 HMAC 签名（?sig=&exp=），由图库接口自动签发。")
-async def serve_image(
-    request: Request,
-    session_id: str,
-    filename: str,
-    sig: str = "",
-    exp: int = 0,
-) -> FileResponse:
-    url_path = request.url.path
-    api_key = settings_store.get().api_key
-    if not sig:
-        if _SIGNED_URL_ENFORCED:
-            raise HTTPException(status_code=403, detail="Signature required")
-        logger.warning("unsigned file access: %s", url_path)
-    elif not verify_signed_path(url_path, sig, exp, api_key):
-        raise HTTPException(status_code=403, detail="Invalid or expired signature")
+         summary="获取图片文件",
+         description="URL 须携带 HMAC 签名（?sig=&exp=），或浏览器 cookie / Bearer 鉴权。",
+         dependencies=[Depends(_require_signed_or_auth)])
+async def serve_image(session_id: str, filename: str) -> FileResponse:
     safe_sid = Path(session_id).name
     safe_fn = Path(filename).name
     path = IMAGE_DIR / safe_sid / safe_fn
@@ -1256,22 +1335,10 @@ _VIDEO_MEDIA_TYPES = {".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video
 
 
 @app.get("/v1/files/video/{session_id}/{filename}", tags=[_TAG_GALLERY],
-         summary="获取视频文件", description="直接返回视频文件内容。支持 mp4 / webm / mov，返回正确的 Content-Type。URL 须携带 HMAC 签名（?sig=&exp=）。")
-async def serve_video(
-    request: Request,
-    session_id: str,
-    filename: str,
-    sig: str = "",
-    exp: int = 0,
-) -> FileResponse:
-    url_path = request.url.path
-    api_key = settings_store.get().api_key
-    if not sig:
-        if _SIGNED_URL_ENFORCED:
-            raise HTTPException(status_code=403, detail="Signature required")
-        logger.warning("unsigned file access: %s", url_path)
-    elif not verify_signed_path(url_path, sig, exp, api_key):
-        raise HTTPException(status_code=403, detail="Invalid or expired signature")
+         summary="获取视频文件",
+         description="支持 mp4 / webm / mov。URL 须携带 HMAC 签名（?sig=&exp=），或浏览器 cookie / Bearer 鉴权。",
+         dependencies=[Depends(_require_signed_or_auth)])
+async def serve_video(session_id: str, filename: str) -> FileResponse:
     safe_sid = Path(session_id).name
     safe_fn = Path(filename).name
     path = IMAGE_DIR / safe_sid / safe_fn
@@ -1711,22 +1778,10 @@ async def delete_local_grok_file(filename: str) -> JSONResponse:
 
 
 @app.get("/v1/grok-files/{filename}", tags=[_TAG_FILES],
-         summary="读取本地 Grok 文件（HMAC 签名 URL）")
-async def serve_grok_file(
-    request: Request,
-    filename: str,
-    sig: str = "",
-    exp: int = 0,
-) -> FileResponse:
+         summary="读取本地 Grok 文件（HMAC 签名 URL 或标准鉴权）",
+         dependencies=[Depends(_require_signed_or_auth)])
+async def serve_grok_file(filename: str) -> FileResponse:
     from .grok_client import GROK_FILES_DIR
-    url_path = request.url.path
-    api_key = settings_store.get().api_key
-    if not sig:
-        if _SIGNED_URL_ENFORCED:
-            raise HTTPException(status_code=403, detail="Signature required")
-        logger.warning("unsigned file access: %s", url_path)
-    elif not verify_signed_path(url_path, sig, exp, api_key):
-        raise HTTPException(status_code=403, detail="Invalid or expired signature")
     safe_fn = Path(filename).name
     path = GROK_FILES_DIR / safe_fn
     if not path.exists() or not path.is_file():
@@ -3061,7 +3116,9 @@ async def update_config(
         patch["grok_browser"] = grok_browser.strip()
     patch["grok_proxy"] = grok_proxy.strip()  # 允许清空（空字符串=禁用代理）
     if flaresolverr_url.strip():
-        patch["flaresolverr_url"] = flaresolverr_url.strip()
+        fs_url = flaresolverr_url.strip()
+        _validate_flaresolverr_url(fs_url)  # raises HTTPException on bad scheme/host
+        patch["flaresolverr_url"] = fs_url
     if log_retention_days.strip():
         try:
             patch["log_retention_days"] = int(log_retention_days.strip())
@@ -3370,7 +3427,8 @@ async def grok_asset_download(
                 "Cache-Control": "private, max-age=43200",  # 12h，与 Grok CDN 一致
             }
             if not inline:
-                safe_name = filename.replace('"', "_")
+                # 过滤 ", \, CR, LF — 防 header injection（CRLF 注入额外响应头）
+                safe_name = re.sub(r'[\r\n"\\]', '_', filename) or "download"
                 headers["Content-Disposition"] = f'attachment; filename="{safe_name}"'
             return StreamingResponse(gen, media_type=content_type, headers=headers)
         except GrokClientError as exc:
