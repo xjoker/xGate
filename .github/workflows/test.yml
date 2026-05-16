@@ -29,3 +29,8 @@ jobs:
 
       - name: Run tests
         run: uv run pytest tests/ -v
+
+      - name: Dependency CVE audit (pip-audit, strict)
+        # 扫 OSV + PyPI Advisory DB；发现任何已知漏洞或元数据缺失即失败。
+        # 与 dependabot 互补：dependabot 推 patch PR，pip-audit 阻断 merge。
+        run: uv tool run pip-audit --strict
