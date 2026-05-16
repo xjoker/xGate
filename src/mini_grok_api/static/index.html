@@ -3582,17 +3582,19 @@ window.loadHome = async function() {
 
       // per-account quotas（来自账号池缓存，可能比聚合视图新或旧）
       const paq = d.per_account || {};
-      const accountLabels = Object.keys(paq);
+      const paqImg = d.per_account_image_quota || {};
+      // 合并 label 集合：chat 或 image 任一有数据的都列出来
+      const accountLabels = Array.from(new Set([...Object.keys(paq), ...Object.keys(paqImg)]));
       const toggleBtn = document.getElementById('h-quota-perAccount-toggle');
       const paqWrap   = document.getElementById('h-quota-per-account');
       if (toggleBtn && paqWrap) {
         if (accountLabels.length >= 2) {
           toggleBtn.style.display = '';
           toggleBtn.dataset.count = String(accountLabels.length);
-          // 渲染（先生成，按钮控制 visibility）
           paqWrap.innerHTML = accountLabels.map(label => {
             const items = paq[label] || [];
-            const chips = items.map(q => {
+            const imgQ = paqImg[label];
+            const chatChips = items.map(q => {
               const pct = q.used_pct ?? 0;
               const color = pct >= 90 ? '#dc2626' : pct >= 70 ? '#d97706' : '#059669';
               return `<div style="display:flex;align-items:center;gap:6px;padding:4px 8px;border:1px solid var(--border-subtle);border-radius:6px;font-size:11px">
@@ -3601,9 +3603,19 @@ window.loadHome = async function() {
                 <span style="color:#9ca3af">(${pct}%)</span>
               </div>`;
             }).join('');
+            const imgChip = imgQ ? (() => {
+              const pct = imgQ.used_pct ?? 0;
+              const color = pct >= 90 ? '#dc2626' : pct >= 70 ? '#d97706' : '#ec4899';
+              return `<div style="display:flex;align-items:center;gap:6px;padding:4px 8px;border:1px solid #fbcfe8;border-radius:6px;font-size:11px;background:#fdf2f8">
+                <span style="font-family:var(--font-mono);color:#9d174d" title="model_name: ${esc(imgQ.model_name)}">图片</span>
+                <span style="font-weight:600;color:${color}">${imgQ.remaining}/${imgQ.total}</span>
+                <span style="color:#9ca3af">(${pct}%)</span>
+              </div>`;
+            })() : '';
+            const allChips = imgChip + chatChips;
             return `<div class="settings-card" style="padding:12px 14px;margin-bottom:8px">
               <div style="font-size:12px;font-weight:700;font-family:var(--font-mono);color:#374151;margin-bottom:6px">${esc(label)}</div>
-              <div style="display:flex;gap:6px;flex-wrap:wrap">${chips || '<span style="font-size:11px;color:var(--fg-muted)">无缓存数据，等待后台 poll</span>'}</div>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">${allChips || '<span style="font-size:11px;color:var(--fg-muted)">无缓存数据，等待后台 poll</span>'}</div>
             </div>`;
           }).join('');
         } else {

@@ -410,6 +410,36 @@ class AdminAccountsTests(unittest.TestCase):
         self.assertEqual(acc["quota_cache"]["grok-4.20-auto"]["remaining"], 20)
         self.assertEqual(acc["quota_cache"]["grok-4.20-auto"]["total"], 25)
 
+    def test_image_quota_cache_round_trip(self) -> None:
+        """account_pool.update_image_quota → get_image_quota 往返一致。"""
+        self.client.post("/admin/accounts", headers=_headers(), json={
+            "label": "img-qc", "cookie": "sso=img_quota_test",
+        })
+        account_pool.update_image_quota(
+            "img-qc", model_name="aurora",
+            remaining=8, total=10, reset_at=0.0,
+        )
+        q = account_pool.get_image_quota("img-qc")
+        self.assertIsNotNone(q)
+        assert q is not None
+        self.assertEqual(q["model_name"], "aurora")
+        self.assertEqual(q["remaining"], 8)
+        self.assertEqual(q["total"], 10)
+        # __image__ key 不污染 chat snapshot — list_account_quotas 仍可读
+        all_q = account_pool.list_account_quotas()
+        entry = next((e for e in all_q if e["label"] == "img-qc"), None)
+        self.assertIsNotNone(entry)
+        assert entry is not None
+        self.assertIn("__image__", entry["quotas"])
+
+    def test_image_quota_get_returns_none_when_missing(self) -> None:
+        """无缓存时返回 None，不抛错。"""
+        self.client.post("/admin/accounts", headers=_headers(), json={
+            "label": "img-none", "cookie": "sso=x",
+        })
+        self.assertIsNone(account_pool.get_image_quota("img-none"))
+        self.assertIsNone(account_pool.get_image_quota("nonexistent-label"))
+
     def test_cookie_is_masked_in_list(self) -> None:
         """列表中 cookie 字段应该是掩码，不应暴露原始 cookie。"""
         raw_cookie = "sso=super_secret_token_abcdef1234567890; sso-rw=another_secret"
