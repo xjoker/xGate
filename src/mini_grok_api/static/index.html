@@ -1309,11 +1309,14 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
     <div class="settings-card" id="current-config" style="font-size:13px;color:var(--fg-muted);font-family:var(--font-mono);line-height:2"></div>
   </div>
 
-  <!-- 左列：导入 cURL -->
+  <!-- 左列：快速导入 default 账号 -->
   <div class="settings-section">
-    <h2>导入 cURL</h2>
+    <h2>快速导入 default 账号</h2>
     <div class="settings-card">
-      <p style="font-size:13px;color:var(--fg-muted);margin-bottom:14px">在 Chrome / Edge Network 面板选择 grok.com 请求，右键 Copy as cURL，粘贴后自动解析 Cookie、UA 和浏览器指纹，并冒烟验证。</p>
+      <p style="font-size:13px;color:var(--fg-muted);margin-bottom:14px">
+        在 Chrome / Edge Network 面板选择 grok.com 请求，右键 Copy as cURL，粘贴后自动解析 Cookie、UA 和浏览器指纹，并冒烟验证。
+        <br><strong style="color:#d97706">注意：</strong>此操作会覆盖账号池中名为 <code style="font-family:var(--font-mono);font-size:12px;background:#f3f4f6;padding:1px 4px;border-radius:3px">default</code> 的账号。多账号请用下方「账号管理」。
+      </p>
       <textarea id="curl-text" style="width:100%;height:100px;padding:10px;border-radius:var(--radius);border:1px solid var(--border-md);background:var(--bg);font-size:12px;font-family:var(--font-mono);resize:vertical" placeholder="curl 'https://grok.com/...' ..."></textarea>
       <div style="margin-top:10px;display:flex;gap:8px">
         <button class="btn btn-primary" onclick="importCurl()">解析并冒烟</button>
@@ -1322,22 +1325,26 @@ input[type=number] { -moz-appearance: textfield; } input[type=number]::-webkit-o
     </div>
   </div>
 
-  <!-- 右列：手动配置 -->
+  <!-- 右列：全局配置 + default 账号凭证快捷编辑 -->
   <div class="settings-section">
-    <h2>手动配置</h2>
+    <h2>全局配置</h2>
     <div class="settings-card">
+      <p style="font-size:12px;color:var(--fg-muted);margin-bottom:12px">上半部分为整服全局；下半部分仅快捷编辑 default 账号，多账号请用账号管理。</p>
       <div class="field-row">
         <div class="field"><label class="field-label">API Key</label><input type="password" id="cfg-apikey" placeholder="留空不修改"></div>
         <div class="field"><label class="field-label">代理</label><input type="text" id="cfg-proxy" placeholder="http://host:port"></div>
       </div>
-      <div class="field" style="margin-top:10px"><label class="field-label">Cookie</label><input type="password" id="cfg-cookie" placeholder="留空不修改"></div>
-      <div class="field-row" style="margin-top:10px">
-        <div class="field"><label class="field-label">User-Agent</label><input type="text" id="cfg-ua"></div>
-        <div class="field"><label class="field-label">curl_cffi 指纹</label><input type="text" id="cfg-browser"></div>
-      </div>
       <div class="field-row" style="margin-top:10px">
         <div class="field"><label class="field-label">日志保留天数</label><input type="number" id="cfg-retention" min="1" max="3650" placeholder="90"></div>
         <div class="field"><label class="field-label">FlareSolverr 地址</label><input type="text" id="cfg-flaresolverr" placeholder="http://host:8191"></div>
+      </div>
+      <div style="margin-top:14px;padding-top:12px;border-top:1px dashed var(--border-subtle)">
+        <div style="font-size:12px;color:#d97706;margin-bottom:8px">⚠ 以下字段会覆盖名为 <code style="font-family:var(--font-mono);background:#f3f4f6;padding:1px 4px;border-radius:3px">default</code> 的账号</div>
+        <div class="field"><label class="field-label">Cookie（default 账号）</label><input type="password" id="cfg-cookie" placeholder="留空不修改"></div>
+        <div class="field-row" style="margin-top:10px">
+          <div class="field"><label class="field-label">User-Agent（default 账号）</label><input type="text" id="cfg-ua"></div>
+          <div class="field"><label class="field-label">curl_cffi 指纹（default 账号）</label><input type="text" id="cfg-browser"></div>
+        </div>
       </div>
       <div style="margin-top:14px"><button class="btn btn-primary" onclick="saveConfig()">保存配置</button></div>
     </div>
