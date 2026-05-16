@@ -1703,9 +1703,29 @@ async function apiForm(method, path, formData) {
   const r = await fetch(path, { method, body: formData, headers, credentials: 'same-origin' });
   if (r.status === 401) {
     const d = await r.clone().json().catch(() => ({}));
-    if (d?.error?.type === 'authentication_error') { showLogin(null, d?.error?.code); }
+    if (d?.error?.type === 'authentication_error') {
+      showLogin(null, d?.error?.code);
+      throw new Error('未授权');
+    }
   }
   return r;
+}
+
+// 表单 POST 帮手：行为对齐 api()，非 2xx 抛错；调用方拿到的 json 一定来自成功响应。
+async function apiFormJson(method, path, formData) {
+  const r = await apiForm(method, path, formData);
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    let msg = d?.error?.message || d?.detail;
+    if (!msg) {
+      const errAny = d?.error;
+      msg = (errAny && typeof errAny === 'object')
+        ? JSON.stringify(errAny)
+        : (errAny || `HTTP ${r.status}`);
+    }
+    throw new Error(msg);
+  }
+  return d;
 }
 
 // ── Toast ──────────────────────────────────────────────────────
@@ -3310,13 +3330,14 @@ window.accountsDelete = async function(label) {
   }
 };
 
-// 点击 modal 背景关闭
-document.addEventListener('click', function(e) {
-  const addModal  = document.getElementById('account-add-modal');
-  const curlModal = document.getElementById('account-curl-modal');
-  if (e.target === addModal)  accountsHideModals();
-  if (e.target === curlModal) accountsHideModals();
-});
+// 点击 modal 背景关闭（事件直接绑在 modal 元素本身，避免 document 级冒泡误触发）
+for (const id of ['account-add-modal', 'account-curl-modal']) {
+  const el = document.getElementById(id);
+  if (!el) continue;
+  el.addEventListener('click', function(e) {
+    if (e.target === el) accountsHideModals();
+  });
+}
 
 window.importCurl = async function() {
   const text = document.getElementById('curl-text').value.trim();
@@ -3328,19 +3349,13 @@ window.importCurl = async function() {
   try {
     const fd = new FormData();
     fd.append('curl_text', text);
-    const r = await apiForm('POST', '/admin/import-curl', fd);
-    const j = await r.json().catch(() => ({}));
-    if (r.ok) {
-      res.style.color = '#059669';
-      res.textContent = '✓ ' + (j.message || '导入成功，冒烟通过');
-      toast('cURL 导入成功', 'success');
-      _sCache.status = null;
-      loadCurrentConfig();
-    } else {
-      res.style.color = '#dc2626';
-      res.textContent = '导入失败: ' + (j.error || `HTTP ${r.status}`);
-    }
-  } catch (e) { res.style.color = '#dc2626'; res.textContent = e.message; }
+    const j = await apiFormJson('POST', '/admin/import-curl', fd);
+    res.style.color = '#059669';
+    res.textContent = '✓ ' + (j.message || '导入成功，冒烟通过');
+    toast('cURL 导入成功', 'success');
+    _sCache.status = null;
+    loadCurrentConfig();
+  } catch (e) { res.style.color = '#dc2626'; res.textContent = '导入失败: ' + e.message; }
 };
 
 window.saveConfig = async function() {
@@ -3360,7 +3375,7 @@ window.saveConfig = async function() {
   if (flaresolverr)  fd.append('flaresolverr_url', flaresolverr);
   if (retention)     fd.append('log_retention_days', retention);
   try {
-    await apiForm('POST', '/admin/config', fd);
+    await apiFormJson('POST', '/admin/config', fd);
     toast('配置已保存', 'success');
     _sCache.status = null;
     loadCurrentConfig();
