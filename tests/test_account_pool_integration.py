@@ -140,11 +140,45 @@ class AdminAccountsTests(unittest.TestCase):
         self.assertEqual(r.status_code, 400)
 
     def test_upsert_empty_cookie_returns_400(self) -> None:
+        """新建账号 cookie 必填。"""
         r = self.client.post("/admin/accounts", headers=_headers(), json={
             "label": "acc-no-cookie",
             "cookie": "",
         })
         self.assertEqual(r.status_code, 400)
+
+    def test_upsert_existing_empty_cookie_preserves_old(self) -> None:
+        """编辑现有账号时 cookie 留空 → 保留旧 cookie，priority/weight 仍更新。"""
+        self.client.post("/admin/accounts", headers=_headers(), json={
+            "label": "acc-edit", "cookie": "sso=keep_me",
+            "priority": 1, "weight": 10,
+        })
+        r = self.client.post("/admin/accounts", headers=_headers(), json={
+            "label": "acc-edit", "cookie": "",
+            "priority": 5, "weight": 20,
+        })
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["action"], "updated")
+        acc = account_pool.get_account("acc-edit")
+        self.assertIsNotNone(acc)
+        assert acc is not None
+        self.assertEqual(acc.cookie, "sso=keep_me")
+        self.assertEqual(acc.priority, 5)
+        self.assertEqual(acc.weight, 20)
+
+    def test_upsert_existing_with_new_cookie_replaces(self) -> None:
+        """编辑现有账号时 cookie 非空 → 覆盖旧 cookie。"""
+        self.client.post("/admin/accounts", headers=_headers(), json={
+            "label": "acc-replace", "cookie": "sso=old",
+        })
+        r = self.client.post("/admin/accounts", headers=_headers(), json={
+            "label": "acc-replace", "cookie": "sso=new",
+        })
+        self.assertEqual(r.status_code, 200)
+        acc = account_pool.get_account("acc-replace")
+        self.assertIsNotNone(acc)
+        assert acc is not None
+        self.assertEqual(acc.cookie, "sso=new")
 
     # ------------------------------------------------------------------
     # DELETE /admin/accounts/{label}
