@@ -145,6 +145,9 @@ class ImageStreamWorker:
     async def _run(self, gateway: "WsGateway", cfg: StreamConfig, session_id: str) -> None:
         aspect_ratio = resolve_aspect_ratio(cfg.size)
         session_dir = _init_session(session_id, prompt=cfg.prompt, source="stream", aspect_ratio=aspect_ratio)
+        # BUG-E 修复：worker 把实际 acquire 到的账号 label 回写到此 dict，
+        # 每次 yield 前刷新 stats_sink["account_label"]，让 log_image 能记录正确账号。
+        stats_sink: dict = {}
         try:
             batch_start = time.time()
             async for batch in gateway.stream_batches(
@@ -156,6 +159,7 @@ class ImageStreamWorker:
                 interval_seconds=cfg.interval_seconds,
                 max_batches=cfg.max_rounds,
                 image_data=cfg.image_data,
+                stats_sink=stats_sink,
                 force_label=self._force_label,
             ):
                 batch_ts = time.time()
@@ -164,9 +168,11 @@ class ImageStreamWorker:
                 self._status.current_round += 1
                 self._status.success_count += len(batch)
                 self._status.last_success_time = batch_ts
+                acc_label = stats_sink.get("account_label", "") or ""
                 logger.info(
-                    "image stream batch done: round=%d saved=%d total=%d",
+                    "image stream batch done: round=%d saved=%d total=%d account=%s",
                     self._status.current_round, len(batch), self._status.success_count,
+                    acc_label or "(unknown)",
                 )
                 self._mirror_status("running")
                 if self._log_db:
@@ -180,6 +186,7 @@ class ImageStreamWorker:
                         source="stream",
                         status="success",
                         duration_ms=duration_ms,
+                        account_label=acc_label,
                     )
                 # 按图片数严格停止：达到 max_images 就让 ws_gateway 停下
                 if cfg.max_images > 0 and self._status.success_count >= cfg.max_images:
@@ -194,6 +201,7 @@ class ImageStreamWorker:
                     image_count=0, aspect_ratio=aspect_ratio, source="stream",
                     status="error", duration_ms=int((time.time() - batch_start) * 1000),
                     error=str(exc),
+                    account_label=stats_sink.get("account_label", "") or "",
                 )
             logger.warning("image stream fatal error: %s", exc)
         except Exception as exc:
@@ -205,6 +213,7 @@ class ImageStreamWorker:
                     image_count=0, aspect_ratio=aspect_ratio, source="stream",
                     status="error", duration_ms=int((time.time() - batch_start) * 1000),
                     error=str(exc),
+                    account_label=stats_sink.get("account_label", "") or "",
                 )
             logger.warning("image stream unexpected error: %s", exc)
         finally:
