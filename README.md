@@ -29,9 +29,12 @@ xGate 把这些操作收敛到一个 Web UI 里：
 - **任务队列**：状态持久化于 SQLite，支持暂停、恢复、重试、排序与批量操作；针对易被内容审核拦截的 prompt 提供"尽力模式"
 - **图库**：每次生成自动按 prompt 创建 session，图片与视频归入同一本地图库
 - **Grok Files 管理**：同步云端列表、批量下载到本地、清理云端文件
+- **多账号池**：SQLite 持久化多个 Grok cookie，按 priority + LRU 自动调度；触发上游限流/CF 拦截后分级 cooldown（minute/hour/day），连续失败自动禁用，后台 30 分钟探活；首页与设置页按账号展示配额
+- **客户端可控选号**：`X-Account-Label` header 在 9 个用户面 endpoint 强制走指定账号（debug / sticky 用途）；多轮对话基于 `conversation_id` 自动 sticky 同一账号，避免 LRU 切号导致 Grok 上下文丢失
 - **反 Cloudflare**：基于 `curl_cffi` 模拟 Chrome TLS 指纹；登录态通过 Chrome cURL 一键导入；可选接入 FlareSolverr 定时刷新 `cf_clearance`
 - **OpenAI 兼容接口**：`/v1` 路径下提供标准 endpoint，外部客户端可直接接入
 - **MCP 工具服务**：实现 MCP 2025-06-18 Streamable HTTP 协议，暴露 9 个工具（对话、搜索、生图、配额查询等），可在 Claude Code / Codex 中直接调用 Grok 能力
+- **安全加固**：HttpOnly cookie + Double-submit CSRF 鉴权；`/v1/auth/login` 限流 10 次/分钟/IP；HMAC 签名 URL 与标准鉴权双通道保护文件下载；CI `pip-audit --strict` 守门，零已知 CVE
 - **极简部署**：单文件配置 `data/config/mini.toml`，单目录持久化 `/app/data`
 
 ## 界面预览
@@ -85,11 +88,31 @@ xGate 把这些操作收敛到一个 Web UI 里：
 - `POST /v1/chat/completions`
 - `POST /v1/images/generations`
 - `POST /v1/videos/generate`
+- `POST /v1/videos/status`（轮询视频生成状态，body `{"video_id": "..."}`）
 
 辅助 endpoint（管理后台同样使用）：
 
-- `GET /v1/quota`、`GET /v1/quota/chat` — 查询 Grok 账号配额
+- `POST /v1/quota`、`POST /v1/quota/chat`、`POST /v1/quota/image` — 查询 Grok 账号配额（响应含 `per_account` 字段，复用账号池后台缓存）
 - `GET /v1/logs`、`GET /v1/logs/stats` — 检索请求日志与统计
+
+#### 多账号选号控制（X-Account-Label）
+
+以下 9 个用户面 endpoint 接受 `X-Account-Label` header，**强制走该账号**（绕过 LRU + soft_cooldown）：
+
+```
+POST /v1/chat/completions
+POST /v1/videos/generate / status
+POST /v1/quota / /v1/quota/chat / /v1/quota/image
+POST /v1/images/chat-imagine
+POST /v1/images/generations
+POST /v1/images/stream/start
+```
+
+- 账号不存在 → `400 invalid_request_error / account_label_not_found`
+- 账号已禁用 → `400 invalid_request_error / account_label_disabled`
+- 没有传 header → 走默认 LRU + priority + soft_cooldown 选号
+
+`/v1/chat/completions` 额外支持基于 `metadata.conversation_id`（或 `user` 字段）的自动 sticky binding，多轮对话固定走同一账号，避免 Grok 上下文丢失。优先级：`X-Account-Label` > sticky binding > LRU。
 
 完整 OpenAPI 文档见 `/docs`。
 
@@ -196,10 +219,23 @@ http://127.0.0.1:8024
 2. 打开 DevTools 的 Network 面板
 3. 选择任意 `grok.com` 请求（推荐 `rest/skills`）
 4. 右键请求，选择 Copy → Copy as cURL (bash)
-5. 打开 xGate Web UI，进入「设置 → 导入 cURL」
-6. 粘贴 cURL 并导入，冒烟验证通过后即可使用
+5. 打开 xGate Web UI，进入「设置」
+6. 单账号：点「快速导入 default 账号」粘贴 cURL → 冒烟验证通过即可
+7. 多账号：用「账号管理 → + 从 cURL 导入」给每个账号起一个 label（如 `main` / `backup-1`）
 
 > 建议在导入前于浏览器中访问任意 IP 查询网站，确认公网 IP 与 xGate / FlareSolverr 出口一致。
+
+### 多账号管理
+
+「设置 → 账号管理」面板提供完整的 CRUD：
+
+- **+ 添加账号**：手动输入 label + cookie；priority 越小越优先调度（数字 1 最优）
+- **+ 从 cURL 导入**：粘贴 cURL，自动解析 cookie / UA / 浏览器指纹 / statsig_id
+- **编辑**：在线修改 priority / weight / cookie（cookie 留空保留旧值）
+- **启用 / 禁用**：手动 disable 后该账号不再参与调度（但 `X-Account-Label` 强制走仍会 400 拒绝）
+- **删除**：彻底移除（含 quota_cache 与 sticky binding 间接失效）
+
+每行展示「额度概览」chip（5 模型 · 最低 X%，hover 看每模型详情），数据来自后台 quota poll loop（默认 5 分钟一轮）。新加账号会立刻 schedule 一次 warmup poll，秒级出现在 per_account 视图。
 
 ## OpenAI 客户端接入
 
