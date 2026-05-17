@@ -5,6 +5,11 @@ port = 8024
 # 不填时自动从请求 Host 头推导；仅在反向代理改写了 Host 头时才需要手动设置
 # public_base_url = "http://10.0.0.1:8024"
 
+# 反向代理（nginx/Caddy/Cloudflare）后端部署时设为 true，限流器从 X-Forwarded-For 取真实客户端 IP
+# 前提：前置代理必须 sanitize 用户传入的 XFF 头，否则客户端可伪造 IP 绕过限流
+# 直接暴露或不使用反向代理时保持 false（默认）
+trust_x_forwarded_for = false
+
 [auth]
 # xGate 自身的访问密钥，前端登录 / Bearer token 都使用此值
 api_key = "change-me"
@@ -29,6 +34,10 @@ flaresolverr_url = ""
 # 可选：FlareSolverr 通过此 HTTP 代理访问 grok.com（用于把 SOCKS5+认证转 HTTP）
 # 远程 FlareSolverr 与 SOCKS5 同主机时留空，让其使用自身网络出口
 flaresolverr_proxy_url = ""
+
+# image quota 探测结果持久化（由服务自动写入，通常无需手改）
+# 填入后重启跳过 4-candidate 探测，直接复用上次结果
+image_quota_model_name = ""
 
 [log]
 retention_days = 90

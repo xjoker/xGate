@@ -14,9 +14,7 @@
 
 ## P2
 
-- `service_tier` / `store` 等 OpenAI 字段做实际持久化（目前仅校验吞掉；`metadata` 已被 conversation_id sticky binding 消费）
-- 反向代理部署时 `slowapi.util.get_remote_address` 拿到的是代理 IP，所有真实客户端会被算成同一 IP — 接入 `X-Forwarded-For` 支持需要配套可信代理 IP 白名单
-- `_IMAGE_QUOTA_MODEL_HINT` 当前只存在进程内存，重启后第一轮 poll 会重新跑 4-candidate 探测。可选持久化到 settings 或 mini.toml
+- `service_tier` / `store` 等 OpenAI 字段做实际持久化（**已决策跳过**：实现需 ~150 行，OpenAI 客户端实际几乎不传，收益接近零；pydantic schema 已接受字段不会 422，只是不存盘。Yuki memory `1e8906b4`）
 
 ## 已完成（历史记录）
 
@@ -30,3 +28,8 @@ Phase 3 backlog 全部清空（详见 CHANGELOG v0.3.1 ~ v0.3.3）：
 - ✓ `/v1/videos/status` POST 化（CSRF 加固）
 - ✓ per-account image quota
 - ✓ CI 接入 `pip-audit --strict`，0 已知 CVE
+
+P2 tech debt（详见 CHANGELOG v0.3.9）：
+
+- ✓ 反向代理 `X-Forwarded-For` 感知限流（`server.trust_x_forwarded_for`，v0.3.9）
+- ✓ `_IMAGE_QUOTA_MODEL_HINT` 持久化到 mini.toml（`grok.image_quota_model_name`，v0.3.9）

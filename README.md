@@ -34,7 +34,7 @@ xGate 把这些操作收敛到一个 Web UI 里：
 - **反 Cloudflare**：基于 `curl_cffi` 模拟 Chrome TLS 指纹；登录态通过 Chrome cURL 一键导入；可选接入 FlareSolverr 定时刷新 `cf_clearance`
 - **OpenAI 兼容接口**：`/v1` 路径下提供标准 endpoint，外部客户端可直接接入
 - **MCP 工具服务**：实现 MCP 2025-06-18 Streamable HTTP 协议，暴露 9 个工具（对话、搜索、生图、配额查询等），可在 Claude Code / Codex 中直接调用 Grok 能力
-- **安全加固**：HttpOnly cookie + Double-submit CSRF 鉴权；`/v1/auth/login` 限流 10 次/分钟/IP；HMAC 签名 URL 与标准鉴权双通道保护文件下载；CI `pip-audit --strict` 守门，零已知 CVE
+- **安全加固**：HttpOnly cookie + Double-submit CSRF 鉴权；`/v1/auth/login` 限流 10 次/分钟/IP；反向代理部署时可开启 `trust_x_forwarded_for` 取真实客户端 IP；HMAC 签名 URL 与标准鉴权双通道保护文件下载；CI `pip-audit --strict` 守门，零已知 CVE
 - **极简部署**：单文件配置 `data/config/mini.toml`，单目录持久化 `/app/data`
 
 ## 界面预览
@@ -175,6 +175,11 @@ proxy = ""
 
 # 仅在部署了 FlareSolverr 时填写
 flaresolverr_url = ""
+
+[server]
+# 反向代理（nginx/Caddy/Cloudflare）后端部署时设为 true，限流从 X-Forwarded-For 取真实 IP
+# 前提：前置代理必须 sanitize XFF 头；直接暴露时保持 false（默认）
+# trust_x_forwarded_for = false
 
 [log]
 # 请求日志保留天数
@@ -393,7 +398,7 @@ curl -s -X POST http://127.0.0.1:8024/mcp \
 - 所有 tool 返回 buffer 模式（完整结果一次性返回）；流式需求请走 `/v1/chat/completions?stream=true`
 - `grok_imagine` `return_mode=url` 返回的代理 URL（`/v1/files/proxy`）无需 cookie，MCP 客户端可直接访问生成图片
 - 代理 URL 的主机部分默认从请求 `Host` 头自动推导，无需配置；反向代理改写了 `Host` 头时，可在 `mini.toml` 中手动设置 `[server] public_base_url = "https://your.domain.com"` 覆盖
-- 单 cookie 单账号，多客户端并发会快速耗尽配额；建议调用前先用 `grok_quota` 确认剩余额度
+- 多客户端并发会快速耗尽配额；建议配置多账号池，并调用前先用 `grok_quota` 确认剩余额度
 
 ## 数据目录
 
