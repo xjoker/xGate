@@ -16,7 +16,7 @@ classifiers = [
     "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
 ]
 dependencies = [
-    "aiohttp>=3.11.0",
+    "aiohttp>=3.14.0",
     "aiohttp-socks>=0.11.0",
     "curl-cffi>=0.15.0",
     "fastapi>=0.119.0",
